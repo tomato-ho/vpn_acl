@@ -492,6 +492,8 @@ ensure_binaries() {
     fi
     # 编译不需要网络，离线模式也允许（依赖已由 --with-deps 或镜像提供）
     log "编译 C++ 组件（源码有更新）"
+    # 时钟偏移会让 make 误以为目标文件比源码新；直接清掉构建目录保证确定性。
+    rm -rf build
     ./configure.sh >/dev/null
     source_fingerprint > "$SOURCE_STAMP"
     NEED_IMAGE_REBUILD=1
