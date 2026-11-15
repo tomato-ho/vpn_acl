@@ -4,6 +4,7 @@
 #include "vpn/db_config.h"
 #include "vpn/ipc.h"
 #include "vpn/policy_store.h"
+#include "vpn/session_marker.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
 
@@ -164,6 +165,14 @@ int main(int argc, char** argv) {
             ipc_request(socket_path, "DISCONNECT", rollback, &ignored_response,
                         &ignored_error);
             throw std::runtime_error(write_error.what());
+        }
+
+        const std::string marker = session_marker_path(
+            socket_path, username, format_ipv4(policy.fixed_ip));
+        if (!write_session_marker(marker, session_id)) {
+            std::cerr << "vpn-client-connect: warning: cannot write session "
+                         "marker "
+                      << marker << "\n";
         }
 
         std::cout << "connected " << username << " " << format_ipv4(policy.fixed_ip)

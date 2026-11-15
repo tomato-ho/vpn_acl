@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(vpn_acl VERSION 0.1.0 LANGUAGES CXX)
+project(vpn_acl VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,7 @@ set(VPnCORE_SOURCES
     libvpncore/src/password.cpp
     libvpncore/src/radius.cpp
     libvpncore/src/retention.cpp
+    libvpncore/src/session_marker.cpp
     libvpncore/src/util.cpp
     libvpncore/src/validation.cpp
 )
@@ -166,6 +167,10 @@ add_test(NAME vpn_nft_batch_tests COMMAND vpn_nft_batch_tests)
 add_executable(vpn_retention_tests tests/test_retention.cpp)
 target_link_libraries(vpn_retention_tests PRIVATE vpncore)
 add_test(NAME vpn_retention_tests COMMAND vpn_retention_tests)
+
+add_executable(vpn_session_marker_tests tests/test_session_marker.cpp)
+target_link_libraries(vpn_session_marker_tests PRIVATE vpncore)
+add_test(NAME vpn_session_marker_tests COMMAND vpn_session_marker_tests)
 
 add_executable(vpn_radius_tests tests/test_radius.cpp)
 target_link_libraries(vpn_radius_tests PRIVATE vpncore)

@@ -204,13 +204,25 @@ void Db::execute(const std::string& sql) {
 }
 
 std::uint64_t Db::last_insert_id() {
-    ensure_connected();
+    // 同 affected_rows：不能先 ping，否则会覆盖上一条 INSERT 的结果。
+    if (!conn_) {
+        return 0;
+    }
     return static_cast<std::uint64_t>(mysql_insert_id(conn_));
 }
 
 std::uint64_t Db::affected_rows() {
-    ensure_connected();
-    return static_cast<std::uint64_t>(mysql_affected_rows(conn_));
+    // 不能在这里先 mysql_ping：ping 会覆盖"上一条语句"的结果，
+    // 使 mysql_affected_rows 返回 (my_ulonglong)-1，转成 uint64 后变成
+    // 一个巨大的值（曾导致 retention 的 DELETE 循环永不退出）。
+    if (!conn_) {
+        return 0;
+    }
+    const my_ulonglong affected = mysql_affected_rows(conn_);
+    if (affected == static_cast<my_ulonglong>(-1)) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(affected);
 }
 
 std::string Db::quote(const std::string& value) {

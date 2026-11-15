@@ -71,6 +71,14 @@ StatusSnapshot parse_openvpn_status(const std::string& path) {
             client.username = trim(field("Common Name"));
         }
         client.client_id = trim(field("Client ID"));
+        const std::string real_address = trim(field("Real Address"));
+        const auto colon = real_address.find_last_of(':');
+        client.remote_ip = colon == std::string::npos
+                               ? real_address
+                               : real_address.substr(0, colon);
+        const auto connected =
+            parse_counter(trim(field("Connected Since (time_t)")));
+        client.connected_since = static_cast<std::time_t>(connected);
         client.bytes_received = parse_counter(trim(field("Bytes Received")));
         client.bytes_sent = parse_counter(trim(field("Bytes Sent")));
         snapshot.clients[client.virtual_ip] = client;

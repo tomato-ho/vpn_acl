@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -66,6 +67,8 @@ private:
     std::string tun_iface_;
     std::string work_dir_;
     bool dry_run_{false};
+    // reconcile 线程与 IPC 线程都会调用 nft，串行化避免脚本互相覆盖。
+    std::recursive_mutex mutex_;
 };
 
 } // namespace vpn

@@ -100,7 +100,8 @@ output; the default path has no FreeRADIUS/PAM dependency.
   freshly signed CA (`certificate is not yet valid`).
 - `install.sh` does not touch firewalld: open `http`, `https`, `1194/udp` manually and
   add masquerade for the tunnel network on routed deployments.
-- Compose runs five services: `mariadb`, `policyd`, `openvpn`, `admin` (`app`), `web`.
+- Compose runs six services: `mariadb`, `policyd`, `openvpn`, `admin` (`app`), `web`,
+  `retention` (daily `retention-cleanup --apply` loop).
   `policyd` and `openvpn` use `network_mode: host` because they create `tun0` and manage
   host nftables; both need `NET_ADMIN`, and `openvpn` needs `/dev/net/tun`.
 - `/run/vpn-policyd` and `/run/openvpn-server` are shared between containers. They are

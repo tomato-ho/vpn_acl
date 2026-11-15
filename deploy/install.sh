@@ -216,20 +216,28 @@ check_prereqs() {
     fi
 
     [[ -e /dev/net/tun ]] || die "/dev/net/tun 不存在，请确认内核支持 tun"
-    if ! lsmod | grep -qw tun; then
+    local modules
+    modules=$(lsmod 2>/dev/null || true)
+    if ! grep -qw tun <<< "$modules"; then
         modprobe tun 2>/dev/null || true
-        lsmod | grep -qw tun || warn "tun 模块未加载，OpenVPN 可能启动失败"
+        modules=$(lsmod 2>/dev/null || true)
+        grep -qw tun <<< "$modules" ||
+            warn "tun 模块未加载，OpenVPN 可能启动失败"
     fi
     command -v nft >/dev/null || die "未找到 nft（policyd 需要）"
     command -v openssl >/dev/null || die "未找到 openssl"
     command -v curl >/dev/null || die "未找到 curl（健康检查需要）"
 
     local port
-    if podman ps --format '{{.Names}}' 2>/dev/null | grep -qE '^vpn-(openvpn|web|admin|mariadb|policyd)$'; then
+    local names
+    names=$(podman ps --format '{{.Names}}' 2>/dev/null || true)
+    if grep -qE '^vpn-(openvpn|web|admin|mariadb|policyd|retention)$' <<< "$names"; then
         log "检测到本项目容器已在运行，跳过端口占用检查"
     elif command -v ss >/dev/null 2>&1; then
+        local listeners
+        listeners=$(ss -lntu 2>/dev/null || true)
         for port in 80 443 8080 1194 3306; do
-            if ss -lntu 2>/dev/null | grep -qE "[:.]${port}\b"; then
+            if grep -qE "[:.]${port}\b" <<< "$listeners"; then
                 case "$port" in
                     1194|8080) warn "端口 $port 已被占用（旧服务未停？）" ;;
                     *) warn "端口 $port 已被占用" ;;
@@ -512,33 +520,10 @@ wait_for_db() {
     die "MariaDB 未在 120 秒内就绪"
 }
 
-table_exists() {
-    local pw name
-    pw=$(env_value MARIADB_ROOT_PASSWORD)
-    name=$(grep -E '^MARIADB_DATABASE=' .env | cut -d= -f2-)
-    podman exec vpn-mariadb mariadb -uroot -p"$pw" -N -e \
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$name' AND table_name='$1'"
-}
 
 apply_sql() {
-    local pw db
-    pw=$(env_value MARIADB_ROOT_PASSWORD)
-    db=$(grep -E '^MARIADB_DATABASE=' .env | cut -d= -f2-)
     log "应用数据库 schema"
-    local file
-    for file in sql/001_vpn_schema.sql sql/002_remove_dns_services.sql \
-                sql/003_add_session_remote_ip.sql sql/004_add_tunnel_network_setting.sql \
-                sql/007_vpn_auth.sql sql/009_session_history.sql; do
-        [[ -f "$file" ]] || continue
-        podman exec -i vpn-mariadb mariadb -uroot -p"$pw" "$db" < "$file" >/dev/null
-    done
-    # 仅当 FreeRADIUS 表存在时才执行对应的补丁
-    if [[ "$(table_exists radacct)" != "0" ]]; then
-        podman exec -i vpn-mariadb mariadb -uroot -p"$pw" "$db" < sql/006_ensure_indexes.sql >/dev/null
-    fi
-    if [[ "$(table_exists radcheck)" != "0" ]]; then
-        podman exec -i vpn-mariadb mariadb -uroot -p"$pw" "$db" < sql/008_import_radcheck.sql >/dev/null
-    fi
+    ./deploy/migrate.sh
 }
 
 create_admin() {

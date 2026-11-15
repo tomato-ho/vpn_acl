@@ -2,6 +2,30 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.2.0] - 2026-11-16
+
+运行时可靠性版本。
+
+### Added
+
+- `vpn-policyd` 主动轮询 `vpn_policy_version`（`policy_check_interval`，默认 5s），
+  不再依赖 admin 的 `REFRESH` 推送。
+- `client-disconnect` 通过 `<socket 目录>/clients/<user>@<ip>` 精确匹配 `session_id`
+  （新增 `libvpncore/session_marker`，带单元测试）。
+- `reconcile` 双向：OpenVPN 在线但数据库缺记录时，自动补建会话并恢复 nft 规则
+  （`recover_grace` 默认 15s，避免与 connect hook 竞争）。
+- `reconcile` / `interim` 移到独立线程；nft 操作在 `NftManager` 内部串行化，
+  connect hook 不再被全量刷新阻塞。
+- `deploy/migrate.sh` + `schema_migrations`：按文件名顺序执行 `sql/`，记录 checksum，
+  重复执行是 no-op。
+- `deploy/backup.sh`：数据库 + 配置 + 证书的备份/恢复，支持保留份数与 `--list`。
+- compose 新增 `retention` 容器，每天自动执行 `retention-cleanup --apply`。
+
+### Changed
+
+- `install.sh` 改用 `migrate.sh` 应用数据库迁移。
+- 策略版本变化会打日志并触发一次全量刷新。
+
 ## [0.1.0] - 2026-11-16
 
 首个公开版本。

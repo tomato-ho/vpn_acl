@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.1.0**
+当前版本：**0.2.0**
 
 ![Dashboard](images/dashboard.png)
 
@@ -53,7 +53,8 @@
    └────────────┘   └──────────────────────┘   └──────────────────┘
 ```
 
-所有组件都在 `compose.yaml` 里，五个容器：`mariadb / policyd / openvpn / admin / web`。
+所有组件都在 `compose.yaml` 里，六个容器：`mariadb / policyd / openvpn / admin / web / retention`。
+`retention` 每天执行一次历史数据清理。
 `openvpn` 和 `policyd` 使用**宿主网络命名空间**（因为要建 `tun0`、操作宿主 nftables）。
 
 ## 快速开始
@@ -236,15 +237,13 @@ podman-compose up -d
 
 ### 数据留存
 
-安装脚本不创建定时任务。需要清理历史数据时：
+`retention` 容器每天自动执行一次清理，默认保留：会话历史与认证日志 180 天、
+审计日志 365 天。手动触发：
 
 ```bash
-podman exec vpn-admin /usr/local/sbin/vpn-policyctl \
+podman exec vpn-retention /usr/local/sbin/vpn-policyctl \
   --config /etc/vpn-policy/config retention-cleanup --apply
 ```
-
-默认保留：会话历史与认证日志 180 天，审计日志 365 天。
-可以用 systemd timer 或 cron 每天调用一次。
 
 ### 开机自启
 

@@ -15,6 +15,7 @@
 #include "vpn/ipc.h"
 #include "vpn/parse.h"
 #include "vpn/policy_store.h"
+#include "vpn/session_marker.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
 
@@ -23,6 +24,8 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+
+#include <atomic>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -86,6 +89,8 @@ struct PolicydConfig {
     int interim_interval{300};
     int reconcile_interval{30};
     int reconcile_grace{120};
+    int recover_grace{15};
+    int policy_check_interval{5};
     uid_t allowed_uid{0};
     std::string log_file{"/var/log/vpn-policyd/vpn-policyd.log"};
     std::string log_level{"info"};
@@ -112,16 +117,16 @@ struct PolicyCache {
 };
 
 struct RuntimeStats {
-    std::uint64_t refresh_total{0};
-    std::uint64_t refresh_errors{0};
-    std::uint64_t refresh_fallback_total{0};
-    std::uint64_t refresh_nft_calls_total{0};
-    std::uint64_t last_refresh_duration_ms{0};
-    std::uint64_t last_refresh_time{0};
-    std::uint64_t reconcile_total{0};
-    std::uint64_t reconcile_errors{0};
-    std::uint64_t last_reconcile_duration_ms{0};
-    std::uint64_t last_reconcile_time{0};
+    std::atomic<std::uint64_t> refresh_total{0};
+    std::atomic<std::uint64_t> refresh_errors{0};
+    std::atomic<std::uint64_t> refresh_fallback_total{0};
+    std::atomic<std::uint64_t> refresh_nft_calls_total{0};
+    std::atomic<std::uint64_t> last_refresh_duration_ms{0};
+    std::atomic<std::uint64_t> last_refresh_time{0};
+    std::atomic<std::uint64_t> reconcile_total{0};
+    std::atomic<std::uint64_t> reconcile_errors{0};
+    std::atomic<std::uint64_t> last_reconcile_duration_ms{0};
+    std::atomic<std::uint64_t> last_reconcile_time{0};
 };
 
 struct RefreshTimer {
@@ -229,6 +234,15 @@ PolicydConfig load_config(const std::string& path) {
     out.reconcile_grace = std::max(
         30, static_cast<int>(parse_u32_or_throw(
                 config.get("reconcile_grace", "120"), "reconcile_grace")));
+    out.policy_check_interval = std::clamp(
+        1, static_cast<int>(parse_u32_or_throw(
+               config.get("policy_check_interval", "5"),
+               "policy_check_interval")),
+        300);
+    out.recover_grace = std::clamp(
+        1, static_cast<int>(parse_u32_or_throw(
+               config.get("recover_grace", "15"), "recover_grace")),
+        3600);
     out.allowed_uid = static_cast<uid_t>(
         parse_u32_or_throw(config.get("allowed_uid", "0"), "allowed_uid"));
     out.log_file = config.get("log_file", out.log_file);
@@ -486,6 +500,21 @@ void insert_session(Db& db, const Session& session) {
         db.quote(session.remote_ip) + "', '" + db.quote(session.acct_session_id) +
         "', FROM_UNIXTIME(" + std::to_string(session.start_time) +
         "), NOW(), 0, 0)");
+}
+
+// 恢复会话时使用：已经存在（并发）就跳过，避免覆盖正在使用的行。
+bool insert_session_if_missing(Db& db, const Session& session) {
+    db.execute(
+        "INSERT IGNORE INTO vpn_sessions "
+        "(session_id, username, virtual_ip, remote_ip, acct_session_id, "
+        "start_time, last_seen, bytes_in, bytes_out) VALUES ('" +
+        db.quote(session.session_id) + "', '" + db.quote(session.username) +
+        "', '" + format_ipv4(session.virtual_ip) + "', '" +
+        db.quote(session.remote_ip) + "', '" + db.quote(session.acct_session_id) +
+        "', FROM_UNIXTIME(" + std::to_string(session.start_time) +
+        "), NOW(), " + std::to_string(session.bytes_in) + ", " +
+        std::to_string(session.bytes_out) + ")");
+    return db.affected_rows() > 0;
 }
 
 void update_session_stats(Db& db,
@@ -871,40 +900,42 @@ void handle_disconnect(const IpcFields& fields,
     std::string match;
 
     if (!session_id.empty()) {
-        match = "session_id";
         session = find_session_by_id(db, session_id);
-        if (!session) {
-            log_info("disconnect ignored user=" + username + " session=" +
-                     session_id + " (session_id not found)");
-            return;
+        if (session) {
+            match = "session_id";
+        } else {
+            log_info("disconnect: session_id not found user=" + username +
+                     " session=" + session_id + ", trying fallback matches");
         }
-    } else if (start_time) {
-        match = "start_time";
+    }
+    if (!session && start_time) {
         session = find_session_by_username_and_start(db, username, *start_time);
-        if (!session) {
-            log_info("disconnect ignored user=" + username + " start_time=" +
-                     std::to_string(*start_time) +
-                     " (session already gone)");
-            return;
+        if (session) {
+            match = "start_time";
         }
-    } else {
-        match = "legacy";
+    }
+    if (!session) {
         const std::string ip_text = optional_field(fields, "virtual_ip");
         if (!ip_text.empty()) {
             try {
                 session =
                     find_session_by_ip(db, ip_or_throw(ip_text, "virtual_ip"));
+                if (session) {
+                    match = "virtual_ip";
+                }
             } catch (const std::exception&) {
             }
         }
-        if (!session) {
-            session = find_session_by_username(db, username);
+    }
+    if (!session) {
+        session = find_session_by_username(db, username);
+        if (session) {
+            match = "username";
         }
-        if (!session) {
-            log_info("disconnect ignored user=" + username +
-                     " (not found, legacy match)");
-            return;
-        }
+    }
+    if (!session) {
+        log_info("disconnect ignored user=" + username + " (no session)");
+        return;
     }
 
     const std::uint64_t bytes_in =
@@ -1338,6 +1369,64 @@ void reconcile(Db& db,
         }
     }
 
+    // 补建：OpenVPN 在线、但 vpn_sessions 没有记录（例如误删或写库失败）。
+    // 用 recover_grace 避免和正在进行的 connect hook 抢同一会话。
+    const std::time_t now_epoch = std::time(nullptr);
+    std::set<std::string> known_ips;
+    for (const auto& session : list_sessions(db)) {
+        known_ips.insert(format_ipv4(session.virtual_ip));
+    }
+    const auto recover_validation = load_validation_config(db);
+    for (const auto& entry : snapshot.clients) {
+        const std::string& ip = entry.first;
+        const StatusClient& client = entry.second;
+        if (known_ips.find(ip) != known_ips.end()) {
+            continue;
+        }
+        if (client.username.empty() || !validate_username(client.username)) {
+            continue;
+        }
+        if (client.connected_since > 0 &&
+            now_epoch - client.connected_since <
+                static_cast<std::time_t>(config.recover_grace)) {
+            continue;
+        }
+
+        Session session;
+        const std::string hash = nft_chain_hash(client.username + "@" + ip);
+        // 如果 connect hook 留下了 marker，沿用原始 session_id，
+        // 这样之后的 disconnect 仍然能精确匹配。
+        const std::string marker =
+            session_marker_path(config.socket_path, client.username, ip);
+        const std::string original_id = read_session_marker(marker);
+        session.session_id =
+            original_id.empty() ? "recover-" + hash : original_id;
+        session.acct_session_id = original_id.empty()
+                                      ? "vpn-recover-" + hash
+                                      : "vpn-" + original_id;
+        session.username = client.username;
+        session.virtual_ip = ip_or_throw(ip, "status virtual IP");
+        session.remote_ip = client.remote_ip;
+        session.start_time =
+            client.connected_since > 0 ? client.connected_since : now_epoch;
+        session.bytes_in = client.bytes_received;
+        session.bytes_out = client.bytes_sent;
+
+        if (!insert_session_if_missing(db, session)) {
+            continue;
+        }
+        std::string error;
+        const auto result =
+            reapply_session(db, nft, session, recover_validation, &error);
+        if (result == ReapplyResult::failed) {
+            log_error("reconcile recover failed for " + client.username +
+                      " ip=" + ip + ": " + error);
+        } else {
+            log_info("reconcile recovered user=" + client.username + " ip=" +
+                     ip + " session=" + session.session_id);
+        }
+    }
+
     const auto remaining = list_sessions(db);
     std::set<std::string> keep_ips;
     std::set<std::string> keep_chains;
@@ -1620,15 +1709,68 @@ int main(int argc, char** argv) {
         PolicyCache policy_cache;
         RuntimeStats runtime_stats;
 
-        auto next_reconcile = std::chrono::steady_clock::now() +
-                              std::chrono::seconds(config.reconcile_interval);
-        auto next_interim = std::chrono::steady_clock::now() +
+        // reconcile / interim 放到独立线程：它们的 nft/DB 操作不再阻塞 connect hook。
+        // 线程持有自己的 DB 连接；nft 操作在 NftManager 内部串行化。
+        std::thread timer_thread([&]() {
+            try {
+                Db timer_db(config.db);
+                auto next_reconcile = std::chrono::steady_clock::now();
+                auto next_interim =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::seconds(config.interim_interval);
+                while (running) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_reconcile) {
+                        ++runtime_stats.reconcile_total;
+                        const auto started = std::chrono::steady_clock::now();
+                        try {
+                            reconcile(timer_db, nft, accounting.get(), config);
+                        } catch (const std::exception& exception) {
+                            ++runtime_stats.reconcile_errors;
+                            log_error(std::string("reconcile failed: ") +
+                                      exception.what());
+                        }
+                        const auto elapsed =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+                        runtime_stats.last_reconcile_duration_ms =
+                            elapsed > 0 ? static_cast<std::uint64_t>(elapsed)
+                                        : 0;
+                        runtime_stats.last_reconcile_time =
+                            static_cast<std::uint64_t>(std::time(nullptr));
+                        next_reconcile =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::seconds(config.reconcile_interval);
+                    }
+                    if (now >= next_interim) {
+                        try {
+                            interim_update(timer_db, accounting.get(), config);
+                        } catch (const std::exception& exception) {
+                            log_error(std::string("interim update failed: ") +
+                                      exception.what());
+                        }
+                        next_interim =
+                            std::chrono::steady_clock::now() +
                             std::chrono::seconds(config.interim_interval);
+                    }
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(200));
+                }
+            } catch (const std::exception& exception) {
+                log_error(std::string("timer thread failed: ") +
+                          exception.what());
+            }
+        });
+
+        auto next_policy_check = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(
+                                     config.policy_check_interval);
 
         while (running) {
             const auto now = std::chrono::steady_clock::now();
             auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               next_reconcile - now)
+                               next_policy_check - now)
                                .count();
             timeout = std::min<long long>(timeout, 1000);
             if (timeout < 0) {
@@ -1656,38 +1798,31 @@ int main(int argc, char** argv) {
             }
 
             const auto after = std::chrono::steady_clock::now();
-            if (after >= next_reconcile) {
-                ++runtime_stats.reconcile_total;
-                const auto reconcile_started = std::chrono::steady_clock::now();
+            if (after >= next_policy_check) {
+                // 主动轮询策略版本：不依赖 admin 的 REFRESH 推送。
                 try {
-                    reconcile(db, nft, accounting.get(), config);
+                    const auto version = read_policy_version(db);
+                    if (version != policy_cache.last_full_version) {
+                        log_info("policy version changed " +
+                                 std::to_string(policy_cache.last_full_version) +
+                                 " -> " + std::to_string(version) +
+                                 ", refreshing");
+                        IpcFields empty;
+                        handle_refresh(empty, db, nft, config, policy_cache,
+                                       runtime_stats);
+                    }
                 } catch (const std::exception& exception) {
-                    ++runtime_stats.reconcile_errors;
-                    log_error(std::string("reconcile failed: ") + exception.what());
+                    log_error(std::string("policy version check failed: ") +
+                              exception.what());
                 }
-                const auto reconcile_elapsed =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - reconcile_started)
-                        .count();
-                runtime_stats.last_reconcile_duration_ms =
-                    reconcile_elapsed > 0
-                        ? static_cast<std::uint64_t>(reconcile_elapsed)
-                        : 0;
-                runtime_stats.last_reconcile_time =
-                    static_cast<std::uint64_t>(std::time(nullptr));
-                next_reconcile = after + std::chrono::seconds(config.reconcile_interval);
-            }
-            if (after >= next_interim) {
-                try {
-                    interim_update(db, accounting.get(), config);
-                } catch (const std::exception& exception) {
-                    log_error(std::string("interim update failed: ") +
-                             exception.what());
-                }
-                next_interim = after + std::chrono::seconds(config.interim_interval);
+                next_policy_check =
+                    after + std::chrono::seconds(config.policy_check_interval);
             }
         }
 
+        if (timer_thread.joinable()) {
+            timer_thread.join();
+        }
         ::close(server_fd);
         ::unlink(config.socket_path.c_str());
         if (accounting) {

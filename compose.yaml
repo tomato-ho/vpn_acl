@@ -111,6 +111,28 @@ services:
       - ${VPN_CERTS_DIR:-/etc/nginx/ssl}:/etc/nginx/certs:ro
       - ${VPN_WEB_ROOT:-./vpn-admin/web/dist}:/usr/share/nginx/html:ro
 
+  # 每天清理一次历史数据（会话/认证默认 180 天，审计 365 天）
+  retention:
+    image: localhost/vpn-acl-app:latest
+    container_name: vpn-retention
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      VPN_DB_HOST: mariadb
+    volumes:
+      - ${VPN_CONFIG_DIR:-/etc/vpn-policy}/config:/etc/vpn-policy/config:ro
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        while true; do
+        /usr/local/sbin/vpn-policyctl --config /etc/vpn-policy/config
+        retention-cleanup --apply || true;
+        sleep 86400;
+        done
+
   # 可选：仅在需要把用量输出到 RADIUS/radacct 时启用
   #   podman-compose --profile radius up -d
   # 注意：镜像通过第三方仓库 packages.inkbridgenetworks.com 构建

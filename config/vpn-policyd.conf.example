@@ -21,6 +21,8 @@ accounting_enabled=0
 interim_interval=300
 reconcile_interval=30
 reconcile_grace=120
+recover_grace=15
+policy_check_interval=5
 allowed_uid=0
 dry_run=0
 

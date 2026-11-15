@@ -280,11 +280,13 @@ bool NftManager::run_script(const std::string& script,
 }
 
 bool NftManager::table_exists() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string error;
     return run_args({"list", "table", "inet", table_}, &error, true);
 }
 
 bool NftManager::ensure_base(std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (dry_run_) {
         return run_script(nft_base_script(table_, tun_iface_), error);
     }
@@ -295,10 +297,12 @@ bool NftManager::ensure_base(std::string* error) {
 }
 
 bool NftManager::check_base(std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     return run_script(nft_base_script(table_, tun_iface_), error, false, true);
 }
 
 bool NftManager::read_state(NftState* state, std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!state) {
         if (error) {
             *error = "state output is null";
@@ -365,6 +369,7 @@ bool NftManager::read_state(NftState* state, std::string* error) {
 bool NftManager::apply_updates(const std::vector<NftSessionUpdate>& updates,
                                NftBatchStats* stats,
                                std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (stats) {
         *stats = NftBatchStats{};
     }
@@ -489,6 +494,7 @@ bool NftManager::apply_session(const std::string& username,
                                const std::vector<Cidr>& allow,
                                const std::vector<Service>& services,
                                std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     NftSessionUpdate update;
     update.username = username;
     update.virtual_ip = virtual_ip;
@@ -500,6 +506,7 @@ bool NftManager::apply_session(const std::string& username,
 bool NftManager::remove_session(const std::string& username,
                                 std::uint32_t virtual_ip,
                                 std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     NftSessionUpdate update;
     update.username = username;
     update.virtual_ip = virtual_ip;
@@ -512,6 +519,7 @@ bool NftManager::cleanup_orphans(const std::set<std::string>& keep_ips,
                                  std::size_t* removed_elements,
                                  std::size_t* removed_chains,
                                  std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (removed_elements) {
         *removed_elements = 0;
     }
