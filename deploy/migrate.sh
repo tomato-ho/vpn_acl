@@ -85,9 +85,14 @@ for file in "${files[@]}"; do
         continue
     fi
 
-    # 005 只对 FreeRADIUS 的 radpostauth 有意义
-    if [[ "$version" == 005_* ]] && ! table_exists radpostauth; then
-        log "跳过 $version（没有 radpostauth 表）"
+    # 与 FreeRADIUS 相关的迁移只在对应表存在时执行
+    required_table=""
+    case "$version" in
+        005_*) required_table=radpostauth ;;
+        006_*) required_table=radacct ;;
+    esac
+    if [[ -n "$required_table" ]] && ! table_exists "$required_table"; then
+        log "跳过 $version（没有 $required_table 表）"
         mysql_exec -e "INSERT INTO schema_migrations (version, checksum)
                        VALUES ('$version', '$checksum')" >/dev/null
         continue

@@ -670,13 +670,20 @@ cmd_install() {
     write_client_template
 
     log "启动数据库"
-    compose up -d mariadb
+    if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'vpn-mariadb'; then
+        podman start vpn-mariadb >/dev/null 2>&1 || true
+    else
+        compose up -d mariadb
+    fi
     wait_for_db
     apply_sql
     create_admin
     [[ $DEMO -eq 1 ]] && seed_demo
 
     log "启动全部服务"
+    # podman-compose 在配置变化时对已存在的容器名比较挑剔，
+    # 先 down 再 up 更确定（数据在 bind mount 里，不受影响）。
+    compose down >/dev/null 2>&1 || true
     compose up -d
     enable_boot_start
     wait_ready
