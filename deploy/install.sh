@@ -26,6 +26,7 @@ DEMO=0
 WITH_DEPS=0
 ASSUME_YES=0
 PROXY_URL=""
+NEED_IMAGE_REBUILD=0
 
 log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[警告]\033[0m %s\n' "$*"; }
@@ -452,37 +453,68 @@ write_client_template() {
 
 # ---------------------------------------------------------------- 构建与数据库
 
+binaries_stale() {
+    local marker=build/vpn-admin
+    [[ -x "$marker" && -x build/vpn-policyd && -x build/vpn-auth-check ]] ||
+        return 0
+    local newer
+    newer=$(find libvpncore libvpnservice vpn-admin vpn-policyd vpn-policyctl \
+                vpn-client-connect vpn-client-disconnect vpn-auth-check \
+                CMakeLists.txt \
+                -type f \( -name '*.cpp' -o -name '*.h' \
+                           -o -name 'CMakeLists.txt' \) \
+                -newer "$marker" -print -quit)
+    [[ -n "$newer" ]]
+}
+
+web_dist_stale() {
+    local marker=vpn-admin/web/dist/index.html
+    [[ -f "$marker" ]] || return 0
+    local newer
+    newer=$(find vpn-admin/web/src vpn-admin/web/public \
+                vpn-admin/web/index.html vpn-admin/web/package.json \
+                -newer "$marker" -print -quit 2>/dev/null)
+    [[ -n "$newer" ]]
+}
+
 ensure_binaries() {
-    if [[ -x build/vpn-admin && -x build/vpn-policyd && -x build/vpn-auth-check ]]; then
-        log "已有编译产物，跳过编译"
-    else
-        if [[ $OFFLINE -eq 1 ]]; then
-            die "--offline 模式需要先编译好 build/ 下的二进制"
-        fi
-        log "编译 C++ 组件（./configure.sh）"
-        ./configure.sh >/dev/null
+    if ! binaries_stale; then
+        log "C++ 产物已是最新"
+        return
     fi
+    # 编译不需要网络，离线模式也允许（依赖已由 --with-deps 或镜像提供）
+    log "编译 C++ 组件（源码有更新）"
+    ./configure.sh >/dev/null
+    NEED_IMAGE_REBUILD=1
 }
 
 ensure_web_dist() {
-    if [[ -f vpn-admin/web/dist/index.html ]]; then
-        log "前端产物已存在"
+    if ! web_dist_stale; then
+        log "前端产物已是最新"
         return
     fi
-    if [[ $OFFLINE -eq 1 ]]; then
-        die "--offline 模式需要 vpn-admin/web/dist 已构建"
+    if command -v npm >/dev/null 2>&1; then
+        if [[ ! -d vpn-admin/web/node_modules ]]; then
+            [[ $OFFLINE -eq 1 ]] &&
+                die "前端需要重建，但缺少 node_modules 且处于 --offline"
+            log "安装前端依赖（npm ci）"
+            (cd vpn-admin/web && npm ci --no-audit --no-fund)
+        fi
+        log "构建前端（npm run build）"
+        (cd vpn-admin/web && npm run build)
+        NEED_IMAGE_REBUILD=1
+        return
     fi
-    command -v npm >/dev/null || die "缺少 npm：请先构建前端或使用已构建的 dist"
-    log "构建前端（npm ci && npm run build）"
-    (cd vpn-admin/web && npm ci && npm run build)
+    [[ $OFFLINE -eq 1 ]] &&
+        die "前端需要重建，但未安装 npm；请使用包含 dist 的离线包"
+    die "缺少 npm：请先安装 nodejs/npm 或使用已构建的 dist"
 }
 
 build_image() {
+    local required=(docker.io/library/mariadb:10.11
+                    docker.io/library/nginx:1.29-alpine)
     if [[ $OFFLINE -eq 1 ]]; then
         local img missing=()
-        local required=(docker.io/library/mariadb:10.11
-                        docker.io/library/nginx:1.29-alpine
-                        localhost/vpn-acl-app:latest)
         for img in "${required[@]}"; do
             podman image exists "$img" || missing+=("$img")
         done
@@ -501,8 +533,20 @@ build_image() {
         if ((${#missing[@]})); then
             die "缺少镜像：${missing[*]}；请在联网机器运行 ./deploy/save-images.sh，把 deploy/images/*.tar 拷过来"
         fi
+    fi
+
+    if [[ $OFFLINE -eq 1 && $NEED_IMAGE_REBUILD -eq 0 ]] &&
+        podman image exists localhost/vpn-acl-app:latest; then
+        log "使用已有应用镜像"
         return
     fi
+
+    if ! podman image exists quay.io/rockylinux/rockylinux:10; then
+        [[ $OFFLINE -eq 1 ]] &&
+            die "缺少基础镜像 quay.io/rockylinux/rockylinux:10；请把应用镜像一起离线导出"
+        log "拉取基础镜像 quay.io/rockylinux/rockylinux:10"
+    fi
+
     log "收集二进制并构建镜像"
     ./deploy/stage-app.sh >/dev/null
     compose build app
