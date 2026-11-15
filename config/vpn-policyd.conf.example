@@ -1,0 +1,37 @@
+socket_path=/run/vpn-policyd/policyd.sock
+nft_bin=/usr/sbin/nft
+nft_table=vpn_acl
+tun_iface=tun0
+work_dir=/run/vpn-policyd
+status_file=/run/openvpn-server/status.log
+management_socket=/run/openvpn-server/management.sock
+# NAS 地址：install.sh 会自动替换为本机 IP；手工部署时填本机对外地址
+nas_ip=127.0.0.1
+
+# RADIUS accounting 是可选输出：默认关闭，用量写本库（vpn_session_history）。
+# 需要对接 FreeRADIUS/radacct 时，把 accounting_enabled 设为 1，
+# 并用 `podman-compose --profile radius up -d` 启动 freeradius 服务。
+radius_server=127.0.0.1
+radius_port=1813
+radius_secret=replace-with-radius-secret
+radius_timeout_ms=2000
+radius_retries=2
+
+accounting_enabled=0
+interim_interval=300
+reconcile_interval=30
+reconcile_grace=120
+allowed_uid=0
+dry_run=0
+
+log_file=/var/log/vpn-policyd/vpn-policyd.log
+log_level=info
+log_max_size=10485760
+log_max_files=10
+log_console=1
+
+db_host=127.0.0.1
+db_port=3306
+db_name=radius
+db_user=radius
+db_password=replace-with-radius-db-password

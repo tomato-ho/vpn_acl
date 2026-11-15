@@ -1,0 +1,3 @@
+ALTER TABLE vpn_sessions
+  ADD COLUMN IF NOT EXISTS remote_ip VARCHAR(45) NOT NULL DEFAULT ''
+  AFTER virtual_ip;

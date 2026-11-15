@@ -1,0 +1,15 @@
+bind=127.0.0.1
+port=8080
+session_ttl=28800
+cookie_secure=1
+trust_proxy=0
+status_file=/run/openvpn-server/status.log
+policyd_socket=/run/vpn-policyd/policyd.sock
+db_pool_size=4
+metrics_cache_seconds=10
+
+db_host=127.0.0.1
+db_port=3306
+db_name=radius
+db_user=radius
+db_password=replace-with-radius-db-password

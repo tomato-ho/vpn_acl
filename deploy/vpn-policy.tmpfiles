@@ -1,0 +1,4 @@
+# 容器共享的运行时目录。放在 tmpfiles.d 里，保证重启后依然存在，
+# 否则 bind mount 会指向已被删除的 inode（容器内看不到 socket）。
+d /run/vpn-policyd   0750 root root -
+d /run/openvpn-server 0750 root root -

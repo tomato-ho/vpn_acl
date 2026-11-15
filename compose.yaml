@@ -1,0 +1,146 @@
+services:
+  mariadb:
+    image: docker.io/library/mariadb:10.11
+    container_name: vpn-mariadb
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-radius}
+      MARIADB_USER: ${MARIADB_USER:-radius}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-name-resolve
+      - --max-connections=200
+    volumes:
+      - ./mariadb/data:/var/lib/mysql
+      - ./mariadb/conf.d:/etc/mysql/conf.d:ro
+    ports:
+      - "${MARIADB_BIND:-127.0.0.1}:${MARIADB_HOST_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - vpn_net
+
+  # 策略守护进程：需要在宿主 netns 里操作 nftables，并读写 OpenVPN 的 socket
+  policyd:
+    image: localhost/vpn-acl-app:latest
+    container_name: vpn-policyd
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - ${VPN_CONFIG_DIR:-/etc/vpn-policy}/policyd.conf:/etc/vpn-policy/policyd.conf:ro
+      # 宿主路径可覆盖，容器内路径固定（配置里写的是 /run 下的路径）
+      - ${VPN_RUN_DIR:-/run/vpn-policyd}:/run/vpn-policyd
+      - ${VPN_OPENVPN_RUN_DIR:-/run/openvpn-server}:/run/openvpn-server
+      - ${VPN_LOG_DIR:-/var/log/vpn-policyd}:/var/log/vpn-policyd
+    command: ["/usr/local/sbin/vpn-policyd", "--config", "/etc/vpn-policy/policyd.conf"]
+
+  # OpenVPN 服务端：宿主 netns（tun0 + 1194/udp），需要 NET_ADMIN 与 /dev/net/tun
+  openvpn:
+    image: localhost/vpn-acl-app:latest
+    container_name: vpn-openvpn
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    depends_on:
+      - policyd
+    volumes:
+      - ${VPN_OPENVPN_CONF:-./deploy/openvpn/server.conf}:/etc/openvpn/server.conf:ro
+      - ${VPN_OPENVPN_CERTS:-/etc/openvpn/server}:/etc/openvpn/certs:ro
+      - ${VPN_OPENVPN_RUN_DIR:-/run/openvpn-server}:/run/openvpn-server
+      # client-connect hook 通过这个 socket 与 policyd 通信
+      - ${VPN_RUN_DIR:-/run/vpn-policyd}:/run/vpn-policyd
+      # 认证脚本与 client-connect hook 读这个目录
+      - ${VPN_CONFIG_DIR:-/etc/vpn-policy}/config:/etc/vpn-policy/config:ro
+    command: ["/usr/local/sbin/openvpn", "--config", "/etc/openvpn/server.conf"]
+
+  # vpn-admin 管理后台（HTTP API + /metrics）
+  app:
+    build:
+      context: .
+      dockerfile: deploy/app.Containerfile
+    image: localhost/vpn-acl-app:latest
+    container_name: vpn-admin
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 容器内通过服务名连库；其余配置仍读 admin.conf
+      VPN_DB_HOST: mariadb
+      # 容器内监听 0.0.0.0，宿主侧仍只映射到 127.0.0.1
+      VPN_ADMIN_BIND: 0.0.0.0
+    volumes:
+      - ${VPN_CONFIG_DIR:-/etc/vpn-policy}/admin.conf:/etc/vpn-policy/admin.conf:ro
+      # 在线会话/健康检查需要读 OpenVPN 状态文件（与 management socket 同目录）
+      - ${VPN_OPENVPN_RUN_DIR:-/run/openvpn-server}:/run/openvpn-server:ro
+      # 与 vpn-policyd 共享 IPC socket 目录（REFRESH / KICK / PING）
+      - ${VPN_RUN_DIR:-/run/vpn-policyd}:/run/vpn-policyd
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - vpn_net
+
+  # 前端静态站点 + TLS 终止 + 反代
+  # 使用宿主 netns：这样 /metrics 的 127.0.0.1 白名单和上游 127.0.0.1:8080 都成立
+  web:
+    image: docker.io/library/nginx:1.29-alpine
+    container_name: vpn-web
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - app
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${VPN_CERTS_DIR:-/etc/nginx/ssl}:/etc/nginx/certs:ro
+      - ${VPN_WEB_ROOT:-./vpn-admin/web/dist}:/usr/share/nginx/html:ro
+
+  # 可选：仅在需要把用量输出到 RADIUS/radacct 时启用
+  #   podman-compose --profile radius up -d
+  # 注意：镜像通过第三方仓库 packages.inkbridgenetworks.com 构建
+  # （EL10 官方仓库没有 FreeRADIUS 3.2），不随本项目维护。
+  # 推荐直接使用外部 RADIUS 服务器，见 freeradius/README.md。
+  freeradius:
+    profiles: ["radius"]
+    build:
+      context: ./freeradius
+      dockerfile: Containerfile
+    image: localhost/vpn-acl-freeradius:rocky10
+    container_name: vpn-freeradius
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mariadb
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DB_HOST: 127.0.0.1
+      DB_PORT: ${MARIADB_HOST_PORT:-3306}
+      DB_NAME: ${MARIADB_DATABASE:-radius}
+      DB_USER: ${MARIADB_USER:-radius}
+      DB_PASSWORD: ${MARIADB_PASSWORD}
+      RADIUS_SECRET: ${RADIUS_SECRET}
+    volumes:
+      - ./freeradius/templates:/etc/raddb/templates:ro
+      - ./freeradius/sites-enabled:/etc/raddb/sites-enabled:ro
+      - ./freeradius/entrypoint.sh:/entrypoint.sh:ro
+
+networks:
+  vpn_net:
+    name: vpn_acl_net
+    driver: bridge

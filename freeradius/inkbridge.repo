@@ -1,0 +1,6 @@
+[inkbridge]
+name=inkbridge-$releasever
+baseurl=https://packages.inkbridgenetworks.com/freeradius-3.2/rocky/$releasever/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/inkbridge.asc

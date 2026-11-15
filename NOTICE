@@ -1,0 +1,59 @@
+VPN Access Control
+Copyright (C) 2026 The VPN Access Control Authors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+The following components are included in, linked by, or bundled with this
+project. They remain under their own licenses; nothing here changes those
+terms.
+
+Vendored source (compiled into the binaries)
+  - cpp-httplib        third_party/httplib.h            MIT
+  - nlohmann/json      third_party/nlohmann/json.hpp    MIT
+
+Dynamically linked at runtime
+  - OpenSSL 3.x                                         Apache-2.0
+  - MariaDB Connector/C 3.x                             LGPL-2.1
+  - spdlog / fmt                                        MIT
+
+Frontend bundle (vpn-admin/web/dist)
+  - Vue 3, Vue Router, Pinia                            MIT
+  - Element Plus, @element-plus/icons-vue               MIT
+  - ECharts                                             Apache-2.0
+  - Axios                                               MIT
+
+Runtime services (separate processes / container images, not linked)
+  - OpenVPN                                             GPL-2.0
+  - MariaDB Server                                      GPL-2.0
+  - nginx                                               BSD-2-Clause
+  - FreeRADIUS (optional)                               GPL-2.0
+
+Notes
+  - MariaDB Connector/C is used as a shared library (LGPL-2.1), which is
+    compatible with this project's AGPL-3.0-only license.
+  - OpenVPN is installed by the user (package manager) or copied from the
+    host at image build time by deploy/stage-app.sh. This repository does
+    not redistribute OpenVPN binaries; the resulting image is built locally
+    on the user's machine.
+  - Container images for MariaDB and nginx are pulled from their official
+    registries under their respective licenses.
+  - The optional FreeRADIUS container is built from a third-party package
+    repository (packages.inkbridgenetworks.com); that repository and the
+    resulting image are not maintained by this project. See
+    freeradius/README.md.

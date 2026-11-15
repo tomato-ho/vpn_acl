@@ -1,0 +1,43 @@
+server vpn {
+    listen {
+        type = auth
+        ipaddr = *
+        port = 1812
+    }
+
+    listen {
+        type = acct
+        ipaddr = *
+        port = 1813
+    }
+
+    authorize {
+        preprocess
+        filter_username
+        sql
+        pap
+    }
+
+    authenticate {
+        Auth-Type PAP {
+            pap
+        }
+    }
+
+    preacct {
+        preprocess
+        acct_unique
+    }
+
+    accounting {
+        sql
+    }
+
+    post-auth {
+        sql
+
+        Post-Auth-Type REJECT {
+            sql
+        }
+    }
+}

@@ -1,0 +1,18 @@
+build/
+.env
+mariadb/data/
+*.o
+*.a
+*.so
+
+# 本地部署产物 / 备份，不入库
+.deploy-backup/
+vpn-admin/web/node_modules/
+vpn-admin/web/dist/
+__pycache__/
+*.log
+
+# 构建出的镜像上下文（由 deploy/stage-app.sh 生成）
+deploy/build-context/
+# 离线镜像包（由 podman save 生成）
+deploy/images/

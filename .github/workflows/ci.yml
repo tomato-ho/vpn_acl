@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: C++ build & test (EL10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 用 EL10 容器保证与发布基线一致；rockylinux 镜像没有 git，
+      # 所以不用 container: 作业，而是在 checkout 之后 docker run。
+      - name: Build and test in Rocky Linux 10
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            quay.io/rockylinux/rockylinux:10 bash -lc '
+              dnf -y install epel-release >/dev/null &&
+              dnf -y install --enablerepo=crb \
+                gcc-c++ make cmake pkgconf-pkg-config \
+                openssl-devel mariadb-connector-c-devel spdlog-devel >/dev/null &&
+              cmake -S . -B build -DVPN_WITH_DB=ON -DVPN_WITH_ADMIN=ON &&
+              cmake --build build -j"$(nproc)" &&
+              ctest --test-dir build --output-on-failure
+            '
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vpn-admin/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vpn-admin/web/package-lock.json
+      - name: Install & build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck configure.sh deploy/*.sh

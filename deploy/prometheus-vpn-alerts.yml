@@ -1,0 +1,101 @@
+groups:
+  - name: vpn-acl
+    rules:
+      - alert: VpnAdminDown
+        expr: up{job="vpn-admin"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vpn-admin is down"
+          description: "Prometheus has not scraped vpn-admin for more than 2 minutes."
+
+      - alert: VpnPolicydDown
+        expr: vpn_policyd_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vpn-policyd is down"
+          description: "The vpn-policyd socket is not available."
+
+      - alert: VpnDatabaseDown
+        expr: vpn_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VPN database is down"
+          description: "vpn-admin cannot query the accounting database."
+
+      - alert: VpnPolicydStatsUnavailable
+        expr: vpn_policyd_up == 1 and vpn_policyd_stats_available == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vpn-policyd statistics are unavailable"
+          description: "The policyd socket responds but STATS requests are failing."
+
+      - alert: VpnPolicydRefreshErrors
+        expr: increase(vpn_policyd_refresh_errors_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vpn-policyd refresh errors"
+          description: "At least one REFRESH failed in the last 10 minutes."
+
+      - alert: VpnPolicydReconcileErrors
+        expr: increase(vpn_policyd_reconcile_errors_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vpn-policyd reconcile errors"
+          description: "At least one reconcile run failed in the last 10 minutes."
+
+      - alert: VpnPolicydRefreshSlow
+        expr: vpn_policyd_refresh_last_duration_seconds > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vpn-policyd REFRESH is slow"
+          description: "The last REFRESH took more than 10 seconds."
+
+      - alert: VpnAuthRejectSpike
+        expr: sum(rate(vpn_auth_total{result="reject"}[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RADIUS authentication failures are elevated"
+          description: "Access-Reject rate has exceeded 0.2 per second for 10 minutes."
+
+      - alert: VpnNoRecentSuccessfulAuth
+        expr: vpn_active_sessions > 0 and time() - vpn_auth_last_success_timestamp > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful RADIUS authentication recently"
+          description: "There are active VPN sessions but no successful authentication in the last hour."
+
+      - alert: VpnAdminLoginFailures
+        expr: sum(rate(vpn_admin_login_failures_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin login failures are elevated"
+          description: "Admin login failure rate has exceeded 0.1 per second for 5 minutes."
+
+      - alert: VpnOpenAccountingSessionsHigh
+        expr: vpn_radacct_sessions{state="open"} > 100
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many RADIUS accounting sessions are still open"
+          description: "More than 100 radacct rows have no acctstoptime."

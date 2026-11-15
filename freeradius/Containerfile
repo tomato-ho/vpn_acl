@@ -1,0 +1,21 @@
+FROM rockylinux:10
+
+COPY inkbridge.asc /etc/pki/rpm-gpg/inkbridge.asc
+COPY inkbridge.repo /etc/yum.repos.d/inkbridge.repo
+
+RUN rpm --import /etc/pki/rpm-gpg/inkbridge.asc \
+    && dnf install -y --enablerepo=crb \
+         --setopt=timeout=30 \
+         --setopt=retries=2 \
+         freeradius \
+         freeradius-mysql \
+         freeradius-utils \
+         gettext \
+    && dnf clean all
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 0755 /entrypoint.sh
+
+EXPOSE 1812/udp 1813/udp
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,6 @@
+db_host=127.0.0.1
+db_port=3306
+db_name=radius
+db_user=radius
+db_password=replace-with-radius-db-password
+socket_path=/run/vpn-policyd/policyd.sock
