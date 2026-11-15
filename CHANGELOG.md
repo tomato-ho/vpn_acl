@@ -24,7 +24,15 @@
 ### Changed
 
 - `install.sh` 改用 `migrate.sh` 应用数据库迁移。
+- 升级时用内容指纹判断是否需要重编 C++/前端，并在需要时重建镜像；
+  源码变化会清理 `build/` 再编译（避免时钟偏移导致 make 跳过）。
 - 策略版本变化会打日志并触发一次全量刷新。
+
+### Fixed
+
+- `Db::affected_rows()` / `last_insert_id()` 不再先 `mysql_ping`（会覆盖上一条语句
+  的结果，曾导致 retention 的 `DELETE ... LIMIT` 循环永不退出）。
+- `migrate.sh` 在缺少 `radacct` 表时跳过 `006_ensure_indexes.sql`。
 
 ## [0.1.0] - 2026-11-16
 
