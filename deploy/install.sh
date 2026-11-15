@@ -453,28 +453,36 @@ write_client_template() {
 
 # ---------------------------------------------------------------- 构建与数据库
 
+SOURCE_STAMP=build/.source-stamp
+WEB_STAMP=vpn-admin/web/dist/.source-stamp
+
+# 用内容指纹而不是 mtime：容器/虚拟机时钟偏移会让 -newer 判断失真。
+source_fingerprint() {
+    find libvpncore libvpnservice vpn-admin vpn-policyd vpn-policyctl \
+         vpn-client-connect vpn-client-disconnect vpn-auth-check CMakeLists.txt \
+         -type f \( -name '*.cpp' -o -name '*.h' -o -name 'CMakeLists.txt' \) \
+         -not -path 'vpn-admin/web/*' -print0 |
+        sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+}
+
+web_fingerprint() {
+    find vpn-admin/web/src vpn-admin/web/public vpn-admin/web/index.html \
+         vpn-admin/web/package.json vpn-admin/web/package-lock.json \
+         vpn-admin/web/vite.config.ts vpn-admin/web/tsconfig.json \
+         -type f -print0 |
+        sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+}
+
 binaries_stale() {
-    local marker=build/vpn-admin
-    [[ -x "$marker" && -x build/vpn-policyd && -x build/vpn-auth-check ]] ||
-        return 0
-    local newer
-    newer=$(find libvpncore libvpnservice vpn-admin vpn-policyd vpn-policyctl \
-                vpn-client-connect vpn-client-disconnect vpn-auth-check \
-                CMakeLists.txt \
-                -type f \( -name '*.cpp' -o -name '*.h' \
-                           -o -name 'CMakeLists.txt' \) \
-                -newer "$marker" -print -quit)
-    [[ -n "$newer" ]]
+    [[ -x build/vpn-admin && -x build/vpn-policyd &&
+        -x build/vpn-auth-check ]] || return 0
+    [[ -f $SOURCE_STAMP ]] || return 0
+    [[ "$(cat "$SOURCE_STAMP")" != "$(source_fingerprint)" ]]
 }
 
 web_dist_stale() {
-    local marker=vpn-admin/web/dist/index.html
-    [[ -f "$marker" ]] || return 0
-    local newer
-    newer=$(find vpn-admin/web/src vpn-admin/web/public \
-                vpn-admin/web/index.html vpn-admin/web/package.json \
-                -newer "$marker" -print -quit 2>/dev/null)
-    [[ -n "$newer" ]]
+    [[ -f vpn-admin/web/dist/index.html && -f $WEB_STAMP ]] || return 0
+    [[ "$(cat "$WEB_STAMP")" != "$(web_fingerprint)" ]]
 }
 
 ensure_binaries() {
@@ -485,6 +493,7 @@ ensure_binaries() {
     # 编译不需要网络，离线模式也允许（依赖已由 --with-deps 或镜像提供）
     log "编译 C++ 组件（源码有更新）"
     ./configure.sh >/dev/null
+    source_fingerprint > "$SOURCE_STAMP"
     NEED_IMAGE_REBUILD=1
 }
 
@@ -502,6 +511,7 @@ ensure_web_dist() {
         fi
         log "构建前端（npm run build）"
         (cd vpn-admin/web && npm run build)
+        web_fingerprint > "$WEB_STAMP"
         NEED_IMAGE_REBUILD=1
         return
     fi
