@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
         const auto policy = compute_effective_policy(data, validation);
 
         const std::string session_id = random_hex(16);
+        const std::string time_unix = get_env("time_unix");
         IpcFields fields;
         fields["username"] = username;
         fields["session_id"] = session_id;
@@ -142,7 +143,6 @@ int main(int argc, char** argv) {
         fields["allow"] = join_cidrs(policy.push_routes);
         fields["services"] = join_services(policy.services);
 
-        const std::string time_unix = get_env("time_unix");
         if (!time_unix.empty()) {
             fields["start_time"] = time_unix;
         }
@@ -167,8 +167,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error(write_error.what());
         }
 
-        const std::string marker = session_marker_path(
-            socket_path, username, format_ipv4(policy.fixed_ip));
+        const std::string marker =
+            session_marker_path(socket_path, username,
+                                format_ipv4(policy.fixed_ip), time_unix);
         if (!write_session_marker(marker, session_id)) {
             std::cerr << "vpn-client-connect: warning: cannot write session "
                          "marker "

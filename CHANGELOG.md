@@ -2,6 +2,28 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.2.1] - 2026-11-16
+
+并发与会话匹配的正确性修复。
+
+### Fixed
+
+- session marker 改为 `<user>@<ip>@<time_unix>`：同一用户重连时新旧连接各有
+  自己的 marker，旧连接的 disconnect 不会读到新连接的 session_id。
+- disconnect 在**明确提供** `session_id` 但查不到时不再回退到 IP/用户名，
+  避免误杀重连后的新会话；只有未提供 id 的旧客户端才走回退。
+- policyd 用全局锁串行化 connect / disconnect / refresh / reconcile，
+  避免 orphan 清理与并发连接竞争导致 nft 链被误删。
+- reconcile 恢复会话时跳过已删除/禁用的用户，避免反复失败。
+- `backup.sh --restore` 不再覆盖 `.env`（备份留作 `.env.restored`），
+  并恢复 `deploy/openvpn/server.conf`。
+- `migrate.sh` 因缺表跳过的迁移不再记为已应用。
+
+### Added
+
+- `deploy/test-reliability.sh`：重连隔离、并发连接、策略版本轮询、
+  reconcile 自愈四项回归。
+
 ## [0.2.0] - 2026-11-16
 
 运行时可靠性版本。

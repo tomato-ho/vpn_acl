@@ -57,21 +57,21 @@ int main() {
 
         IpcFields fields;
         fields["username"] = username;
+        const std::string time_unix = get_env("time_unix");
         const std::string virtual_ip = get_env("ifconfig_pool_remote_ip");
         if (!virtual_ip.empty()) {
             fields["virtual_ip"] = virtual_ip;
 
             // 优先用 connect hook 留下的 session_id 精确匹配，避免 start_time
             // 在"同用户同 IP 快速重连"时匹配到错误会话。
-            const std::string marker =
-                session_marker_path(socket_path, username, virtual_ip);
+            const std::string marker = session_marker_path(
+                socket_path, username, virtual_ip, time_unix);
             const std::string session_id = read_session_marker(marker);
             if (!session_id.empty()) {
                 fields["session_id"] = session_id;
                 ::unlink(marker.c_str());
             }
         }
-        const std::string time_unix = get_env("time_unix");
         if (!time_unix.empty()) {
             fields["start_time"] = time_unix;
         }

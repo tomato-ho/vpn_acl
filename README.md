@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.2.0**
+当前版本：**0.2.1**
 
 ![Dashboard](images/dashboard.png)
 
@@ -286,6 +286,14 @@ ctest --test-dir build --output-on-failure
 ```
 
 测试是自包含的：不需要数据库、网络、nftables 或 fixtures。
+
+可靠性回归（需要已运行的栈）：
+
+```bash
+sudo ./deploy/test-reliability.sh
+```
+
+覆盖：重连隔离、并发连接、策略版本轮询、reconcile 自愈。
 
 ## 许可证
 

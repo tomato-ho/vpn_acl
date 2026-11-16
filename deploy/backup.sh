@@ -161,10 +161,16 @@ do_restore() {
         mkdir -p "$WEB_CERTS"
         cp -a "$tmp/files/web-certs/." "$WEB_CERTS/"
     fi
+    if [[ -f "$tmp/files/openvpn-server.conf" ]]; then
+        log "恢复 deploy/openvpn/server.conf（会覆盖仓库里的同名文件）"
+        cp -a "$tmp/files/openvpn-server.conf" deploy/openvpn/server.conf
+    fi
     if [[ -f "$tmp/files/env" ]]; then
-        log "恢复 .env"
-        cp -a "$tmp/files/env" .env
-        chmod 0600 .env
+        # 不覆盖当前 .env：MariaDB 的 root 密码是初始化时写入数据目录的，
+        # 直接换 .env 会与新库不匹配。备份里的版本留作参考。
+        log "备份中的 .env 保存为 .env.restored（当前 .env 不变）"
+        cp -a "$tmp/files/env" .env.restored
+        chmod 0600 .env.restored
     fi
 
     log "启动全部服务"

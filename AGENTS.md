@@ -67,7 +67,12 @@ output; the default path has no FreeRADIUS/PAM dependency.
   `{PBKDF2-SHA256}...` radcheck form.
 - Sessions: `vpn_sessions` holds online sessions only. On disconnect,
   `vpn-policyd` archives into `vpn_session_history` (keyed by `acct_session_id`,
-  idempotent) before deleting the online row.
+  idempotent) before deleting the online row. The connect hook writes
+  `/run/vpn-policyd/clients/<user>@<ip>@<time_unix>` so the disconnect hook can
+  match its own `session_id` even after a reconnect.
+- Policy/session mutations (`connect`, `disconnect`, `refresh`, `reconcile`) are
+  serialized by a process-wide mutex in `vpn-policyd`; reconcile runs on a timer
+  thread, so this mutex is what prevents orphan cleanup from racing a new connect.
 - Auth audit: `vpn_auth_log` (username, remote_ip, success, reason). Rate limiting is
   5 failures/5 min per username and 20/5 min per IP.
 - Admin API auth is a session cookie plus `X-CSRF-Token` on non-GET requests; use the
@@ -98,6 +103,9 @@ output; the default path has no FreeRADIUS/PAM dependency.
   required image is still missing. `--proxy URL` exports `http(s)_proxy`/`no_proxy` for
   dnf/npm/podman. The host clock must be NTP-accurate; skew makes clients reject the
   freshly signed CA (`certificate is not yet valid`).
+- Reliability regression: `deploy/test-reliability.sh` (needs a running stack)
+  covers reconnect isolation, concurrent connects, policy-version polling and
+  reconcile recovery.
 - `install.sh` does not touch firewalld: open `http`, `https`, `1194/udp` manually and
   add masquerade for the tunnel network on routed deployments.
 - Compose runs six services: `mariadb`, `policyd`, `openvpn`, `admin` (`app`), `web`,

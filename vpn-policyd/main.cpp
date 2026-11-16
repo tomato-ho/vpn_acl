@@ -26,6 +26,7 @@
 #include <sys/time.h>
 
 #include <atomic>
+#include <mutex>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -73,6 +74,10 @@ std::string terminate_cause_name(int cause) {
 }
 
 volatile sig_atomic_t running = 1;
+
+// 串行化所有会修改会话/策略的函数：timer 线程的 reconcile 与主线程的
+// connect/disconnect/refresh 不能交错，否则 orphan 清理可能删掉刚建的链。
+std::mutex g_policy_mutex;
 
 struct PolicydConfig {
     std::string socket_path{"/run/vpn-policyd/policyd.sock"};
@@ -431,6 +436,21 @@ const char* kSessionColumns =
     "session_id, username, virtual_ip, remote_ip, acct_session_id, "
     "UNIX_TIMESTAMP(start_time), bytes_in, bytes_out";
 
+bool user_is_active(Db& db, const std::string& username) {
+    const auto rows = db.query(
+        "SELECT enabled FROM vpn_users WHERE username = '" +
+        db.quote(username) + "'");
+    if (rows.empty() || rows[0].empty()) {
+        log_warn("user_is_active: no row for " + username);
+        return false;
+    }
+    if (rows[0][0] != "1") {
+        log_warn("user_is_active: enabled=" + rows[0][0] + " for " + username);
+        return false;
+    }
+    return true;
+}
+
 std::optional<Session> find_session_by_username(Db& db,
                                                 const std::string& username) {
     const auto rows = db.query(
@@ -777,6 +797,7 @@ void handle_connect(const IpcFields& fields,
                     AccountingWorker* accounting,
                     const PolicydConfig& config,
                     PolicyCache& cache) {
+    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
     const std::string username = require_field(fields, "username");
     if (!validate_username(username)) {
         throw std::runtime_error("invalid username");
@@ -877,6 +898,7 @@ void handle_disconnect(const IpcFields& fields,
                        AccountingWorker* accounting,
                        const PolicydConfig& config,
                        PolicyCache& cache) {
+    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
     const std::string username = require_field(fields, "username");
     const std::string session_id = optional_field(fields, "session_id");
 
@@ -901,12 +923,14 @@ void handle_disconnect(const IpcFields& fields,
 
     if (!session_id.empty()) {
         session = find_session_by_id(db, session_id);
-        if (session) {
-            match = "session_id";
-        } else {
-            log_info("disconnect: session_id not found user=" + username +
-                     " session=" + session_id + ", trying fallback matches");
+        if (!session) {
+            // id 是明确的：查不到说明这条会话已经被清理（例如重连时 Admin-Reset）。
+            // 不能再按 IP/用户名回退，否则会误杀重连后的新会话。
+            log_info("disconnect ignored user=" + username + " session=" +
+                     session_id + " (session_id not found)");
+            return;
         }
+        match = "session_id";
     }
     if (!session && start_time) {
         session = find_session_by_username_and_start(db, username, *start_time);
@@ -1136,6 +1160,7 @@ void handle_refresh(const IpcFields& fields,
                     const PolicydConfig& config,
                     PolicyCache& cache,
                     RuntimeStats& stats) {
+    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
     if (config.dry_run) {
         log_info("refresh skipped in dry-run");
         return;
@@ -1331,6 +1356,7 @@ void reconcile(Db& db,
                NftManager& nft,
                AccountingWorker* accounting,
                const PolicydConfig& config) {
+    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
     if (config.dry_run) {
         return;
     }
@@ -1386,6 +1412,11 @@ void reconcile(Db& db,
         if (client.username.empty() || !validate_username(client.username)) {
             continue;
         }
+        if (!user_is_active(db, client.username)) {
+            log_warn("reconcile recover skipped (unknown or disabled user): " +
+                     client.username);
+            continue;
+        }
         if (client.connected_since > 0 &&
             now_epoch - client.connected_since <
                 static_cast<std::time_t>(config.recover_grace)) {
@@ -1396,9 +1427,16 @@ void reconcile(Db& db,
         const std::string hash = nft_chain_hash(client.username + "@" + ip);
         // 如果 connect hook 留下了 marker，沿用原始 session_id，
         // 这样之后的 disconnect 仍然能精确匹配。
-        const std::string marker =
-            session_marker_path(config.socket_path, client.username, ip);
-        const std::string original_id = read_session_marker(marker);
+        const std::string key =
+            client.connected_since > 0
+                ? std::to_string(client.connected_since)
+                : std::string();
+        std::string original_id = read_session_marker(session_marker_path(
+            config.socket_path, client.username, ip, key));
+        if (original_id.empty()) {
+            original_id = find_session_marker(config.socket_path,
+                                              client.username, ip);
+        }
         session.session_id =
             original_id.empty() ? "recover-" + hash : original_id;
         session.acct_session_id = original_id.empty()

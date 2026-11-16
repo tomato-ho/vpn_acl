@@ -61,6 +61,7 @@ shopt -u nullglob
 applied=0
 skipped=0
 pending=0
+skipped_missing=0
 
 for file in "${files[@]}"; do
     version=$(basename "$file")
@@ -92,9 +93,9 @@ for file in "${files[@]}"; do
         006_*) required_table=radacct ;;
     esac
     if [[ -n "$required_table" ]] && ! table_exists "$required_table"; then
+        # 不记录为已应用：以后补上 FreeRADIUS 表时还应重新尝试。
         log "跳过 $version（没有 $required_table 表）"
-        mysql_exec -e "INSERT INTO schema_migrations (version, checksum)
-                       VALUES ('$version', '$checksum')" >/dev/null
+        skipped_missing=$((skipped_missing + 1))
         continue
     fi
 
@@ -110,4 +111,8 @@ if [[ $status_only -eq 1 ]]; then
     exit 0
 fi
 
-printf '\n迁移完成：新应用 %d 个，跳过 %d 个\n' "$applied" "$skipped"
+printf '\n迁移完成：新应用 %d 个，已应用 %d 个' "$applied" "$skipped"
+if [[ $skipped_missing -gt 0 ]]; then
+    printf '，因缺表跳过 %d 个' "$skipped_missing"
+fi
+printf '\n'

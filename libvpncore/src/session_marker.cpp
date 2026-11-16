@@ -1,5 +1,6 @@
 #include "vpn/session_marker.h"
 
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include <cstdio>
@@ -36,12 +37,14 @@ std::string trim(std::string value) {
 
 std::string session_marker_path(const std::string& socket_path,
                                 const std::string& username,
-                                const std::string& virtual_ip) {
+                                const std::string& virtual_ip,
+                                const std::string& connection_key) {
     std::string dir = socket_path;
     const auto slash = dir.find_last_of('/');
     dir = slash == std::string::npos ? std::string(".") : dir.substr(0, slash);
+    const std::string key = connection_key.empty() ? "0" : connection_key;
     return dir + "/clients/" + sanitize(username) + "@" +
-           sanitize(virtual_ip);
+           sanitize(virtual_ip) + "@" + sanitize(key);
 }
 
 bool write_session_marker(const std::string& path,
@@ -67,6 +70,42 @@ bool write_session_marker(const std::string& path,
         }
     }
     return std::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+std::string find_session_marker(const std::string& socket_path,
+                                const std::string& username,
+                                const std::string& virtual_ip) {
+    std::string dir = socket_path;
+    const auto slash = dir.find_last_of('/');
+    dir = slash == std::string::npos ? std::string(".") : dir.substr(0, slash);
+    dir += "/clients";
+
+    DIR* handle = ::opendir(dir.c_str());
+    if (handle == nullptr) {
+        return {};
+    }
+    const std::string prefix =
+        sanitize(username) + "@" + sanitize(virtual_ip) + "@";
+    std::string best_key;
+    std::string best_session;
+    while (dirent* entry = ::readdir(handle)) {
+        const std::string name = entry->d_name;
+        if (name.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const std::string key = name.substr(prefix.size());
+        if (key <= best_key) {
+            continue;
+        }
+        const std::string session =
+            read_session_marker(dir + "/" + name);
+        if (!session.empty()) {
+            best_key = key;
+            best_session = session;
+        }
+    }
+    ::closedir(handle);
+    return best_session;
 }
 
 std::string read_session_marker(const std::string& path) {
