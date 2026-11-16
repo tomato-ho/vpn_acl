@@ -295,6 +295,16 @@ sudo ./deploy/test-reliability.sh
 
 覆盖：重连隔离、并发连接、策略版本轮询、reconcile 自愈。
 
+长时间稳定性（故障注入 + 采样）：
+
+```bash
+sudo ./deploy/soak-faults.sh --duration 10h --interval 15m
+sudo ./deploy/soak-monitor.sh --duration 10h
+```
+
+`soak-faults.sh` 会轮流重启 openvpn/mariadb/policyd/admin、刷新网络、
+改策略版本、模拟重连；`soak-monitor.sh` 每 5 分钟写一行 CSV。
+
 ## 许可证
 
 本项目采用 **AGPL-3.0-only**：

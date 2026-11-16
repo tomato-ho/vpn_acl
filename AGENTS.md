@@ -105,7 +105,8 @@ output; the default path has no FreeRADIUS/PAM dependency.
   freshly signed CA (`certificate is not yet valid`).
 - Reliability regression: `deploy/test-reliability.sh` (needs a running stack)
   covers reconnect isolation, concurrent connects, policy-version polling and
-  reconcile recovery.
+  reconcile recovery. `deploy/soak-faults.sh` injects faults on a schedule and
+  `deploy/soak-monitor.sh` samples health/resources to CSV for long runs.
 - `install.sh` does not touch firewalld: open `http`, `https`, `1194/udp` manually and
   add masquerade for the tunnel network on routed deployments.
 - Compose runs six services: `mariadb`, `policyd`, `openvpn`, `admin` (`app`), `web`,
