@@ -127,10 +127,11 @@ services:
       - /bin/sh
       - -c
       - >-
+        trap 'exit 0' TERM INT;
         while true; do
         /usr/local/sbin/vpn-policyctl --config /etc/vpn-policy/config
         retention-cleanup --apply || true;
-        sleep 86400;
+        sleep 86400 & wait $!;
         done
 
   # 可选：仅在需要把用量输出到 RADIUS/radacct 时启用

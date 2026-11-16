@@ -3,12 +3,21 @@
 #include "db_pool.h"
 #include "http_server.h"
 
+#include <csignal>
 #include <unistd.h>
 
 #include <iostream>
 #include <string>
 
 namespace {
+
+vpn::admin::HttpServer* g_server = nullptr;
+
+void handle_stop_signal(int) {
+    if (g_server != nullptr) {
+        g_server->stop();
+    }
+}
 
 int run_check(const vpn::admin::AdminConfig& config) {
     int failures = 0;
@@ -63,6 +72,11 @@ int main(int argc, char** argv) {
         vpn::admin::MetricsCollector metrics(config, pool);
         vpn::admin::HttpServer server(config, pool, sessions, limiter,
                                       metrics);
+
+        g_server = &server;
+        // 容器里本进程是 PID 1，默认会忽略 SIGTERM；显式处理才能优雅退出。
+        std::signal(SIGTERM, handle_stop_signal);
+        std::signal(SIGINT, handle_stop_signal);
 
         std::cerr << "vpn-admin listening on " << config.bind << ":"
                   << config.port << "\n";

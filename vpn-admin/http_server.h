@@ -23,6 +23,8 @@ public:
                MetricsCollector& metrics);
 
     bool run();
+    // 供信号处理器调用：停止监听并让 run() 返回。
+    void stop();
 
 private:
     void setup_routes();

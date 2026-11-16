@@ -22,9 +22,11 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -463,7 +465,18 @@ bool db_alive(DbPool& pool) {
         auto lease = pool.acquire();
         lease.db().query("SELECT 1");
         return true;
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
+        // 限流：最多每 30 秒打一条，避免健康检查刷屏。
+        static std::mutex mutex;
+        static std::chrono::steady_clock::time_point last{};
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (last.time_since_epoch().count() == 0 ||
+            now - last >= std::chrono::seconds(30)) {
+            last = now;
+            std::cerr << "vpn-admin: readyz database check failed: "
+                      << error.what() << "\n";
+        }
         return false;
     }
 }
@@ -546,6 +559,10 @@ std::string HttpServer::admin_metrics() {
             << "\",status=\"" << status << "\"} " << entry.second << "\n";
     }
     return out.str();
+}
+
+void HttpServer::stop() {
+    server_.stop();
 }
 
 bool HttpServer::run() {

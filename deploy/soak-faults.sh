@@ -302,7 +302,12 @@ podman ps --format '{{.Names}}' | grep -qx vpn-mariadb ||
     fail "vpn-mariadb 未运行"
 podman ps --format '{{.Names}}' | grep -qx vpn-policyd ||
     fail "vpn-policyd 未运行"
-wait_ready 60 || fail "初始 readyz 不健康，先排查再注入故障"
+if ! wait_ready 60; then
+    log "初始 readyz 不健康，等待恢复（不退出）"
+    if ! wait_ready "$TIMEOUT"; then
+        log "警告：readyz 仍未恢复，继续运行；precheck 会跳过不健康的轮次"
+    fi
+fi
 
 if ! $POLICYCTL --config "$CONFIG" group-show staff >/dev/null 2>&1; then
     fail "缺少 staff 组（soak 脚本需要它创建测试用户）"

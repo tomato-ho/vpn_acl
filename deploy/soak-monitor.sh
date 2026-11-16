@@ -52,7 +52,7 @@ sqlq() { podman exec vpn-mariadb mariadb -uroot -p"$ROOT_PW" "$DB_NAME" -N -e "$
 
 mkdir -p "$(dirname "$OUT")"
 if [[ ! -f "$OUT" ]]; then
-    echo "time,readyz,rss_kb,fds,sessions,history,chains,restarts,db_conns,refresh_total,reconcile_total,refresh_errors,reconcile_errors" > "$OUT"
+    echo "time,readyz,database,policyd,status_file,rss_kb,fds,sessions,history,chains,restarts,db_conns,refresh_total,reconcile_total,refresh_errors,reconcile_errors" > "$OUT"
 fi
 
 end_at=0
@@ -64,8 +64,13 @@ log "采样开始 interval=${INTERVAL}s duration=${DURATION}s -> $OUT"
 
 while true; do
     ts=$(date -Is)
+    ready_body=$(curl -s --max-time 3 http://127.0.0.1:8080/readyz 2>/dev/null || true)
     ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-        http://127.0.0.1:8080/readyz 2>/dev/null || echo 000)
+        http://127.0.0.1:8080/readyz 2>/dev/null || true)
+    ready=${ready:-000}
+    db_flag=$(grep -o '"database":[a-z]*' <<< "$ready_body" | cut -d: -f2)
+    policyd_flag=$(grep -o '"policyd":[a-z]*' <<< "$ready_body" | cut -d: -f2)
+    status_flag=$(grep -o '"status_file":[a-z]*' <<< "$ready_body" | cut -d: -f2)
 
     pid=$(pgrep -f 'vpn-policyd --config' | head -1 || true)
     if [[ -n "$pid" ]]; then
@@ -94,9 +99,10 @@ while true; do
     refresh_errors=$(awk '/^vpn_policyd_refresh_errors_total /{print $2}' <<< "$metrics" | tail -1)
     reconcile_errors=$(awk '/^vpn_policyd_reconcile_errors_total /{print $2}' <<< "$metrics" | tail -1)
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$ts" "$ready" "$rss" "$fds" "$sessions" "$history" "$chains" \
-        "$restarts" "$db_conns" "${refresh_total:-0}" "${reconcile_total:-0}" \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$ts" "$ready" "${db_flag:-}" "${policyd_flag:-}" "${status_flag:-}" \
+        "$rss" "$fds" "$sessions" "$history" "$chains" "$restarts" "$db_conns" \
+        "${refresh_total:-0}" "${reconcile_total:-0}" \
         "${refresh_errors:-0}" "${reconcile_errors:-0}" >> "$OUT"
 
     if (( end_at > 0 && $(date +%s) >= end_at )); then
