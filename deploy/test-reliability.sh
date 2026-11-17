@@ -9,6 +9,7 @@
 #   B. 并发连接：5 个用户同时 CONNECT，跨一次 reconcile 后会话与 nft 链仍完整
 #   C. 版本轮询：直接改 vpn_policy_version，不调 IPC，policyd 应自动刷新
 #   D. reconcile 自愈：删除在线会话行后应被补建并恢复 nft
+#   E. 过期 status：openvpn 重启后不得用旧快照造出重复的 recovered 历史
 #
 set -euo pipefail
 
@@ -66,15 +67,25 @@ fi
 
 cleanup_users=()
 D_PID=""
+E_PID=""
 cleanup() {
     if [[ -n "$D_PID" ]]; then
         kill "$D_PID" 2>/dev/null || true
     fi
+    if [[ -n "$E_PID" ]]; then
+        kill "$E_PID" 2>/dev/null || true
+    fi
     pkill -f 'dev tun-rel' 2>/dev/null || true
+    podman start vpn-openvpn >/dev/null 2>&1 || true
+    rm -f /tmp/vpn-rel-e.status
     local user
     for user in "${cleanup_users[@]:-}"; do
         [[ -n "$user" ]] || continue
-        sql -e "DELETE FROM vpn_sessions WHERE username='$user';
+        rm -f "$MARKER_DIR/$user@"* 2>/dev/null || true
+        sql -e "DELETE FROM vpn_flow_state WHERE session_id IN
+                     (SELECT session_id FROM vpn_sessions WHERE username='$user');
+                DELETE FROM vpn_access_log WHERE username='$user';
+                DELETE FROM vpn_sessions WHERE username='$user';
                 DELETE FROM vpn_session_history WHERE username='$user';
                 DELETE FROM vpn_auth_log WHERE username='$user';
                 DELETE FROM vpn_user_rules WHERE username='$user';
@@ -91,7 +102,11 @@ pkill -f 'dev tun-rel' 2>/dev/null || true
 
 create_user() {
     local user=$1 ip=$2
-    sql -e "DELETE FROM vpn_sessions WHERE username='$user';
+    sql -e "DELETE FROM vpn_flow_state WHERE session_id IN
+                 (SELECT session_id FROM vpn_sessions WHERE username='$user');
+            DELETE FROM vpn_access_log WHERE username='$user';
+            DELETE FROM vpn_session_history WHERE username='$user';
+            DELETE FROM vpn_sessions WHERE username='$user';
             DELETE FROM vpn_user_rules WHERE username='$user';
             DELETE FROM vpn_users WHERE username='$user';" >/dev/null
     $POLICYCTL --config "$CONFIG" user-add "$user" --group staff \
@@ -289,6 +304,86 @@ ok "D: 会话已补建且 nft 已恢复"
 
 kill "$D_PID" 2>/dev/null || true
 wait "$D_PID" 2>/dev/null || true
+D_PID=""
 rm -f /tmp/vpn-rel-d.cred
+
+# ---------------------------------------------------------------- E. 恢复
+log "E. 重启 openvpn 后立即重启 policyd：不应产生重复的 recovered 历史"
+E_USER="t-rel-e"
+E_IP=10.9.100.87
+create_user "$E_USER" "$E_IP"
+printf '%s\n%s\n' "$E_USER" 'RelTest123!' > /tmp/vpn-rel-e.cred
+chmod 600 /tmp/vpn-rel-e.cred
+
+timeout 180 "$OPENVPN_BIN" --config /etc/vpn-policy/client.ovpn --dev tun-rele \
+    --remote 127.0.0.1 1194 --auth-user-pass /tmp/vpn-rel-e.cred \
+    --route-noexec --ifconfig-noexec \
+    > /tmp/vpn-rel-e.log 2>&1 &
+E_PID=$!
+
+wait_online "$E_USER" 40 || fail "E: 真实客户端未上线"
+wait_status_ip "$E_IP" 30 || fail "E: 状态文件里没有该客户端"
+# 让 connected_since 超过 recover_grace（15s），否则恢复逻辑会因“刚连接”跳过，
+# 测不到过期 status 分支。
+sleep 20
+
+# 保存一份“旧客户端仍在”的 status，用于制造重启后的过期快照。
+cp /run/openvpn-server/status.log /tmp/vpn-rel-e.status
+
+# 停掉 openvpn：触发 disconnect 归档旧会话，同时让 status 文件不再被更新；
+# 然后把旧 status 放回去并重启 policyd，稳定复现“过期 status”场景。
+podman stop vpn-openvpn >/dev/null
+for _ in $(seq 1 60); do
+    [[ "$(sqlq "SELECT COUNT(*) FROM vpn_session_history
+                 WHERE username='$E_USER'")" -ge 1 ]] && break
+    sleep 1
+done
+[[ "$(sqlq "SELECT COUNT(*) FROM vpn_session_history WHERE username='$E_USER'")" -ge 1 ]] ||
+    fail "E: 旧会话未归档"
+cp /tmp/vpn-rel-e.status /run/openvpn-server/status.log
+touch /run/openvpn-server/status.log
+podman restart vpn-policyd >/dev/null
+
+for _ in $(seq 1 30); do
+    if curl --noproxy '*' -fsS --max-time 2 \
+        http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+# openvpn 仍处于停止状态，status 不会被刷新。修复后 policyd 应识别为过期，
+# 不得重新创建 t-rel-e 的会话。
+sleep 5
+E_ONLINE=$(sqlq "SELECT COUNT(*) FROM vpn_sessions WHERE username='$E_USER'")
+[[ "$E_ONLINE" == "0" ]] ||
+    fail "E: 过期 status 仍被恢复成在线会话（count=$E_ONLINE）"
+
+podman start vpn-openvpn >/dev/null
+
+HIST=0
+for _ in $(seq 1 60); do
+    HIST=$(sqlq "SELECT COUNT(*) FROM vpn_session_history WHERE username='$E_USER'")
+    [[ "$HIST" -ge 1 ]] && break
+    sleep 1
+done
+sleep 5
+HIST=$(sqlq "SELECT COUNT(*) FROM vpn_session_history WHERE username='$E_USER'")
+OVERLAP=$(sqlq "SELECT COUNT(*) FROM vpn_session_history a
+                  JOIN vpn_session_history b
+                    ON a.username=b.username AND a.id < b.id
+                   AND a.start_time < b.stop_time
+                   AND b.start_time < a.stop_time
+                 WHERE a.username='$E_USER'")
+[[ "$HIST" -le 1 ]] || fail "E: 同一连接产生了 $HIST 条历史记录"
+[[ "$OVERLAP" == "0" ]] || fail "E: 历史会话出现时间重叠"
+RECOVER=$(sqlq "SELECT COUNT(*) FROM vpn_session_history
+                 WHERE username='$E_USER' AND session_id LIKE 'recover-%'")
+ok "E: 无重复历史（rows=$HIST overlap=$OVERLAP recover=$RECOVER）"
+
+kill "$E_PID" 2>/dev/null || true
+wait "$E_PID" 2>/dev/null || true
+E_PID=""
+rm -f /tmp/vpn-rel-e.cred /tmp/vpn-rel-e.status
 
 log "全部可靠性用例通过"

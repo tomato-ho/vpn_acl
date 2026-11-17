@@ -2,6 +2,24 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.3] - 2026-11-17
+
+修复恢复会话造成的重复/覆盖历史记录。
+
+### Fixed
+
+- `reconcile` 恢复会话前检查该用户/IP 最后一条历史的 `stop_time`；如果
+  status 的 `connected_since` 更早，说明是重启后残留的过期快照，直接跳过。
+  这修复了 openvpn 重启后凭空多出一条 `recover-` 会话的问题。
+- 无 connect marker 时，恢复会话 ID 改为按 `username + ip + connected_since`
+  生成，不同连接不再共用同一个 `acct_session_id`，不会再用
+  `ON DUPLICATE KEY UPDATE` 覆盖旧历史。
+- 恢复时只使用精确 time marker，不再回退到同用户/IP 的任意旧 marker。
+- 新增 `vpn_session_recovery_tests`（ID 唯一性、过期判断、长度约束）。
+- `test-reliability.sh` 新增 E：停 openvpn → 归档旧会话 → 放回旧 status →
+  重启 policyd，断言不会恢复出在线会话或重复历史；测试后清理 marker。
+- 清理本次测试环境中的重复 recover 历史与对应访问记录。
+
 ## [0.3.2] - 2026-11-17
 
 修复容器日志时区不一致。

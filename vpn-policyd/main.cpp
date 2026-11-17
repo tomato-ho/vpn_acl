@@ -16,6 +16,7 @@
 #include "vpn/parse.h"
 #include "vpn/policy_store.h"
 #include "vpn/session_marker.h"
+#include "vpn/session_recovery.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
 
@@ -535,6 +536,24 @@ std::vector<Session> list_sessions(Db& db) {
         }
     }
     return sessions;
+}
+
+// 该用户/IP 最后一条历史记录的结束时间（epoch）。
+std::optional<std::time_t> last_history_stop(Db& db,
+                                             const std::string& username,
+                                             const std::string& virtual_ip) {
+    const auto rows = db.query(
+        "SELECT UNIX_TIMESTAMP(stop_time) FROM vpn_session_history "
+        "WHERE username = '" + db.quote(username) + "' AND virtual_ip = '" +
+        db.quote(virtual_ip) + "' ORDER BY stop_time DESC LIMIT 1");
+    if (rows.empty() || rows[0].empty() || rows[0][0].empty()) {
+        return std::nullopt;
+    }
+    try {
+        return static_cast<std::time_t>(std::stoll(rows[0][0]));
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
 }
 
 void insert_session(Db& db, const Session& session) {
@@ -1707,30 +1726,46 @@ void reconcile(Db& db,
             continue;
         }
 
-        Session session;
-        const std::string hash = nft_chain_hash(client.username + "@" + ip);
-        // 如果 connect hook 留下了 marker，沿用原始 session_id，
-        // 这样之后的 disconnect 仍然能精确匹配。
+        // 重启后 status 文件可能仍保留上一个已归档连接的条目。
+        // 如果它的 connected_since 早于该用户/IP 的最后归档时间，直接跳过，
+        // 否则会凭空造出一条重复的 recovered 会话。
+        const auto last_stop = last_history_stop(db, client.username, ip);
+        if (last_stop &&
+            recovery_is_stale(client.connected_since, *last_stop)) {
+            log_info("reconcile recover skipped (stale status) user=" +
+                     client.username + " ip=" + ip +
+                     " connected_since=" +
+                     std::to_string(client.connected_since) +
+                     " last_stop=" + std::to_string(*last_stop));
+            continue;
+        }
+
+        const std::time_t start_time =
+            client.connected_since > 0 ? client.connected_since : now_epoch;
+        // 如果 connect hook 留下了精确 marker，沿用原始 session_id，
+        // 这样之后的 disconnect 仍然能精确匹配。没有 marker 时按
+        // connected_since 生成唯一 ID，避免不同连接覆盖同一条历史记录。
         const std::string key =
             client.connected_since > 0
                 ? std::to_string(client.connected_since)
                 : std::string();
-        std::string original_id = read_session_marker(session_marker_path(
-            config.socket_path, client.username, ip, key));
-        if (original_id.empty()) {
-            original_id = find_session_marker(config.socket_path,
-                                              client.username, ip);
+        const std::string original_id = read_session_marker(
+            session_marker_path(config.socket_path, client.username, ip, key));
+
+        Session session;
+        if (!original_id.empty()) {
+            session.session_id = original_id;
+            session.acct_session_id = "vpn-" + original_id;
+        } else {
+            const auto identity =
+                recovery_identity(client.username, ip, start_time);
+            session.session_id = identity.session_id;
+            session.acct_session_id = identity.acct_session_id;
         }
-        session.session_id =
-            original_id.empty() ? "recover-" + hash : original_id;
-        session.acct_session_id = original_id.empty()
-                                      ? "vpn-recover-" + hash
-                                      : "vpn-" + original_id;
         session.username = client.username;
         session.virtual_ip = ip_or_throw(ip, "status virtual IP");
         session.remote_ip = client.remote_ip;
-        session.start_time =
-            client.connected_since > 0 ? client.connected_since : now_epoch;
+        session.start_time = start_time;
         session.bytes_in = client.bytes_received;
         session.bytes_out = client.bytes_sent;
 

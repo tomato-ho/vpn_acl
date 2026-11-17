@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.3.2**
+当前版本：**0.3.3**
 
 ![Dashboard](images/dashboard.png)
 
@@ -345,7 +345,8 @@ ctest --test-dir build --output-on-failure
 sudo ./deploy/test-reliability.sh
 ```
 
-覆盖：重连隔离、并发连接、策略版本轮询、reconcile 自愈。
+覆盖：重连隔离、并发连接、策略版本轮询、reconcile 自愈、过期 status
+不产生重复的历史恢复记录。
 
 访问审计回归（需要已运行的栈 + openvpn 客户端）：
 

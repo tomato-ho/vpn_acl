@@ -71,6 +71,12 @@ output; the default path has no FreeRADIUS/PAM dependency.
   idempotent) before deleting the online row. The connect hook writes
   `/run/vpn-policyd/clients/<user>@<ip>@<time_unix>` so the disconnect hook can
   match its own `session_id` even after a reconnect.
+- Recovery: if a status client has no session row, `reconcile` reuses the exact
+  connect marker when present; otherwise `recovery_identity()` derives an ID from
+  `connected_since`, so different connections cannot overwrite one history row.
+  Recovery is skipped when the status `connected_since` predates that
+  user/IP's latest archived `stop_time` (`recovery_is_stale`), which prevents a
+  post-restart stale status from creating a duplicate recovered session.
 - Policy/session mutations (`connect`, `disconnect`, `refresh`, `reconcile`) are
   serialized by a process-wide mutex in `vpn-policyd`; reconcile runs on a timer
   thread, so this mutex is what prevents orphan cleanup from racing a new connect.
@@ -130,8 +136,9 @@ output; the default path has no FreeRADIUS/PAM dependency.
   dnf/npm/podman. The host clock must be NTP-accurate; skew makes clients reject the
   freshly signed CA (`certificate is not yet valid`).
 - Reliability regression: `deploy/test-reliability.sh` (needs a running stack)
-  covers reconnect isolation, concurrent connects, policy-version polling and
-  reconcile recovery. `deploy/test-access-audit.sh` covers allow/deny flow
+  covers reconnect isolation, concurrent connects, policy-version polling,
+  reconcile recovery and stale-status recovery (no duplicate recovered history).
+  `deploy/test-access-audit.sh` covers allow/deny flow
   accounting (ICMP + TCP upload/download), mid-transfer policy revocation,
   policyd restart continuity and final sampling;
   it temporarily adds `tun0`/the peer veth to the firewalld `trusted` zone and
