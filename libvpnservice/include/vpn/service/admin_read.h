@@ -17,7 +17,6 @@ struct UserSummary {
     std::string group_name;
     std::string fixed_ip;
     bool enabled{false};
-    bool must_change_password{false};
     std::string created_at;
     std::string updated_at;
 };

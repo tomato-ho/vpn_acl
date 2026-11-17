@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -335,7 +336,6 @@ json user_json(const service::UserSummary& user) {
                 {"group", user.group_name},
                 {"fixed_ip", user.fixed_ip},
                 {"enabled", user.enabled},
-                {"must_change_password", user.must_change_password},
                 {"created_at", user.created_at},
                 {"updated_at", user.updated_at}};
 }
@@ -678,6 +678,9 @@ void HttpServer::setup_routes() {
             if (!rows.empty() && rows[0].size() >= 2 &&
                 vpn::parse_bool(rows[0][1], false)) {
                 valid = vpn::verify_admin_password(password, rows[0][0]);
+            } else {
+                // 未知/禁用账号也做一次 PBKDF2，减小用户名枚举的时序差异。
+                (void)vpn::pbkdf2_sha256_admin(password);
             }
 
             if (!valid) {
@@ -865,15 +868,6 @@ void HttpServer::setup_routes() {
                 }
                 input.display_name = body["display_name"].get<std::string>();
             }
-            if (body.contains("must_change_password")) {
-                if (!body["must_change_password"].is_boolean()) {
-                    send_error(res, 400, "bad_request",
-                               "must_change_password must be boolean");
-                    return;
-                }
-                input.must_change_password =
-                    body["must_change_password"].get<bool>();
-            }
 
             auto lease = pool_.acquire();
             const auto user =
@@ -933,15 +927,6 @@ void HttpServer::setup_routes() {
                                   return;
                               }
                               input.enabled = body["enabled"].get<bool>();
-                          }
-                          if (body.contains("must_change_password")) {
-                              if (!body["must_change_password"].is_boolean()) {
-                                  send_error(res, 400, "bad_request",
-                                             "must_change_password must be boolean");
-                                  return;
-                              }
-                              input.must_change_password =
-                                  body["must_change_password"].get<bool>();
                           }
 
                           const std::string username = req.matches[1].str();
@@ -1013,15 +998,6 @@ void HttpServer::setup_routes() {
                          service::PasswordResetInput input;
                          input.password =
                              body["password"].get<std::string>();
-                         if (body.contains("must_change_password")) {
-                             if (!body["must_change_password"].is_boolean()) {
-                                 send_error(res, 400, "bad_request",
-                                            "must_change_password must be boolean");
-                                 return;
-                             }
-                             input.must_change_password =
-                                 body["must_change_password"].get<bool>();
-                         }
                          const std::string username = req.matches[1].str();
                          auto lease = pool_.acquire();
                          service::reset_user_password(
@@ -2031,8 +2007,16 @@ void HttpServer::setup_routes() {
                                   httplib::Response& res) {
         handle(res, [&]() {
             const bool database_up = db_alive(pool_);
-            const bool status_ok =
-                ::access(config_.status_file.c_str(), R_OK) == 0;
+            // OpenVPN 每 5 秒刷新 status；只检查可读会把“卡死但文件还在”
+            // 误判为健康，必须同时检查 mtime。
+            bool status_ok = false;
+            struct stat status_info {};
+            if (::stat(config_.status_file.c_str(), &status_info) == 0) {
+                const std::time_t now = std::time(nullptr);
+                const std::time_t age =
+                    now > status_info.st_mtime ? now - status_info.st_mtime : 0;
+                status_ok = age <= 30;
+            }
             std::string policyd_response;
             std::string policyd_error;
             const bool policyd_up = ipc_request(

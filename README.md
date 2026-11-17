@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.3.3**
+当前版本：**0.3.4**
 
 ![Dashboard](images/dashboard.png)
 
@@ -356,6 +356,15 @@ sudo ./deploy/test-access-audit.sh
 
 覆盖：允许目标的上行/下行字节（ICMP + TCP 长连接）、拒绝目标的记录、
 传输中撤回权限立即生效、policyd 重启后继续累加、断开时最终采样与 nft 集合清理。
+
+配置边界与认证风控：
+
+```bash
+sudo ./deploy/test-guards.sh
+```
+
+覆盖：固定 IP/组范围的网关/网络/广播校验、规则/服务上限写入校验、
+VPN 认证失败按 username+IP 限流（跨 IP 不互相锁死）。
 
 长时间稳定性（故障注入 + 采样）：
 

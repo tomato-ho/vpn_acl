@@ -63,6 +63,19 @@ std::optional<Service> parse_service(const std::string& value) {
     return service;
 }
 
+bool is_reserved_tunnel_address(const Cidr& tunnel_network,
+                                std::uint32_t ip) {
+    if (tunnel_network.prefix > 30) {
+        return false;
+    }
+    if (ip == tunnel_network.start || ip == tunnel_network.end) {
+        return true;
+    }
+    // OpenVPN `server <network> <netmask>` uses the first host as the gateway.
+    return static_cast<std::uint64_t>(ip) ==
+           static_cast<std::uint64_t>(tunnel_network.start) + 1;
+}
+
 namespace {
 
 bool is_within_allowed_targets(const Cidr& cidr,
@@ -116,6 +129,18 @@ EffectivePolicy compute_effective_policy(const PolicyData& data,
     if (config.has_tunnel_network &&
         !cidr_contains(config.tunnel_network, data.user.fixed_ip)) {
         throw ValidationError("fixed IP is outside the tunnel network");
+    }
+    if (config.has_tunnel_network &&
+        is_reserved_tunnel_address(config.tunnel_network,
+                                   data.user.fixed_ip)) {
+        throw ValidationError(
+            "fixed IP is a reserved tunnel address (network/broadcast/gateway)");
+    }
+    for (const auto service_ip : config.allowed_service_ips) {
+        if (data.user.fixed_ip == service_ip) {
+            throw ValidationError(
+                "fixed IP conflicts with a configured server service IP");
+        }
     }
 
     std::size_t enabled_rules = 0;

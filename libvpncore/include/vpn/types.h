@@ -48,7 +48,6 @@ struct User {
     uint32_t fixed_ip{0};
     bool has_fixed_ip{false};
     bool enabled{true};
-    bool must_change_password{false};
 };
 
 struct Service {

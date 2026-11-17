@@ -5,6 +5,7 @@
 #include "vpn/password.h"
 #include "vpn/policy_store.h"
 #include "vpn/service/errors.h"
+#include "vpn/service/limits.h"
 #include "vpn/service/transaction.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
@@ -39,8 +40,7 @@ json user_json(const UserSummary& user) {
                 {"display_name", user.display_name},
                 {"group", user.group_name},
                 {"fixed_ip", user.fixed_ip},
-                {"enabled", user.enabled},
-                {"must_change_password", user.must_change_password}};
+                {"enabled", user.enabled}};
 }
 
 json rule_json(const UserRule& rule) {
@@ -99,6 +99,17 @@ std::string validate_fixed_ip(const std::string& value,
         !cidr_contains(config.tunnel_network, fixed_ip)) {
         fail(ErrorCode::validation,
              "fixed IP is outside the tunnel network");
+    }
+    if (config.has_tunnel_network &&
+        is_reserved_tunnel_address(config.tunnel_network, fixed_ip)) {
+        fail(ErrorCode::validation,
+             "fixed IP is a reserved tunnel address (network/broadcast/gateway)");
+    }
+    for (const auto service_ip : config.allowed_service_ips) {
+        if (fixed_ip == service_ip) {
+            fail(ErrorCode::validation,
+                 "fixed IP conflicts with a configured server service IP");
+        }
     }
     return format_ipv4(fixed_ip);
 }
@@ -197,7 +208,6 @@ UserSummary create_user(Db& db,
     user.group_name = group.name;
     user.fixed_ip = fixed_ip;
     user.enabled = true;
-    user.must_change_password = input.must_change_password;
 
     const std::string hash = pbkdf2_sha256_user(input.password);
     try {
@@ -205,11 +215,10 @@ UserSummary create_user(Db& db,
         db.execute(
             "INSERT INTO vpn_users "
             "(username, display_name, group_id, fixed_ip, enabled, "
-            "must_change_password, password_hash, password_updated_at) VALUES ('" +
+            "password_hash, password_updated_at) VALUES ('" +
             db.quote(input.username) + "', '" + db.quote(input.display_name) +
             "', " + std::to_string(group.id) + ", '" +
-            db.quote(fixed_ip) + "', 1, " +
-            (input.must_change_password ? "1" : "0") + ", '" +
+            db.quote(fixed_ip) + "', 1, '" +
             db.quote(hash) + "', NOW())");
         write_audit_as(db, operator_name, "user-create", input.username, "",
                        user_json(user).dump());
@@ -234,7 +243,7 @@ UserSummary update_user(Db& db,
         fail(ErrorCode::not_found, "user not found: " + username);
     }
     if (!input.display_name && !input.group && !input.fixed_ip &&
-        !input.enabled && !input.must_change_password) {
+        !input.enabled) {
         fail(ErrorCode::validation, "no fields to update");
     }
 
@@ -245,8 +254,6 @@ UserSummary update_user(Db& db,
     const std::string fixed_ip_input =
         input.fixed_ip.value_or(current->fixed_ip);
     const bool enabled = input.enabled.value_or(current->enabled);
-    const bool must_change =
-        input.must_change_password.value_or(current->must_change_password);
 
     validate_display_name(display_name);
     if (fixed_ip_input.empty()) {
@@ -267,7 +274,6 @@ UserSummary update_user(Db& db,
     after.group_name = group.name;
     after.fixed_ip = fixed_ip;
     after.enabled = enabled;
-    after.must_change_password = must_change;
 
     try {
         Transaction tx(db);
@@ -275,8 +281,9 @@ UserSummary update_user(Db& db,
             "UPDATE vpn_users SET display_name = '" + db.quote(display_name) +
             "', group_id = " + std::to_string(group.id) + ", fixed_ip = '" +
             db.quote(fixed_ip) + "', enabled = " + (enabled ? "1" : "0") +
-            ", must_change_password = " + (must_change ? "1" : "0") +
             " WHERE username = '" + db.quote(username) + "'");
+        ensure_rule_limits(db, validation.max_rules_per_user);
+        ensure_service_limits(db, validation.max_services_per_user);
         write_audit_as(db, operator_name, "user-update", username,
                        user_json(*current).dump(), user_json(after).dump());
         bump_policy_version(db);
@@ -305,14 +312,10 @@ void reset_user_password(Db& db,
         Transaction tx(db);
         db.execute(
             "UPDATE vpn_users SET password_hash = '" + db.quote(hash) +
-            "', password_updated_at = NOW(), must_change_password = " +
-            std::string(input.must_change_password ? "1" : "0") +
-            " WHERE username = '" + db.quote(username) + "'");
+            "', password_updated_at = NOW() "
+            "WHERE username = '" + db.quote(username) + "'");
         write_audit_as(db, operator_name, "user-password-reset", username, "",
-                       json{{"password_reset", true},
-                            {"must_change_password",
-                             input.must_change_password}}
-                           .dump());
+                       json{{"password_reset", true}}.dump());
         bump_policy_version(db);
         tx.commit();
     } catch (const ServiceError&) {
@@ -466,6 +469,10 @@ UserRule update_user_rule(Db& db,
         std::string(enabled ? "1" : "0") + " WHERE id = " +
         std::to_string(rule_id) + " AND username = '" +
         db.quote(username) + "'");
+    if (enabled) {
+        const auto validation = load_validation_config(db);
+        ensure_rule_limits(db, validation.max_rules_per_user);
+    }
     write_audit_as(db, operator_name, "user-rule-update", username,
                    rule_json(before).dump(), rule_json(after).dump());
     bump_policy_version(db);

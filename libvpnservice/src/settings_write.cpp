@@ -141,6 +141,12 @@ void validate_tunnel_network(Db& db, const Cidr& tunnel) {
                  "group " + row[0] +
                      " is outside the new tunnel network");
         }
+        if (is_reserved_tunnel_address(tunnel, start) ||
+            is_reserved_tunnel_address(tunnel, end)) {
+            fail(ErrorCode::conflict,
+                 "group " + row[0] +
+                     " uses a network/broadcast/gateway address");
+        }
     }
 
     const auto users = db.query(
@@ -159,6 +165,11 @@ void validate_tunnel_network(Db& db, const Cidr& tunnel) {
             fail(ErrorCode::conflict,
                  "user " + row[0] +
                      " fixed IP is outside the new tunnel network");
+        }
+        if (is_reserved_tunnel_address(tunnel, fixed_ip)) {
+            fail(ErrorCode::conflict,
+                 "user " + row[0] +
+                     " fixed IP is a reserved tunnel address");
         }
     }
 }

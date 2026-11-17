@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(vpn_acl VERSION 0.3.3 LANGUAGES CXX)
+project(vpn_acl VERSION 0.3.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,6 +72,7 @@ if(VPN_WITH_DB)
         libvpnservice/src/admin_read.cpp
         libvpnservice/src/access_log.cpp
         libvpnservice/src/group_write.cpp
+        libvpnservice/src/limits.cpp
         libvpnservice/src/metrics_read.cpp
         libvpnservice/src/openvpn_status.cpp
         libvpnservice/src/service_write.cpp
@@ -90,7 +91,7 @@ endif()
 
 if(VPN_WITH_DB)
     add_executable(vpn-policyctl vpn-policyctl/main.cpp)
-    target_link_libraries(vpn-policyctl PRIVATE vpncore)
+    target_link_libraries(vpn-policyctl PRIVATE vpncore vpnservice)
 
     add_executable(vpn-client-connect vpn-client-connect/main.cpp)
     target_link_libraries(vpn-client-connect PRIVATE vpncore)

@@ -28,13 +28,13 @@ std::uint32_t parse_u32(const std::string& value) {
 
 constexpr const char* kUserColumns =
     "u.username, u.display_name, IFNULL(g.name, ''), IFNULL(u.fixed_ip, ''), "
-    "u.enabled, u.must_change_password, "
+    "u.enabled, "
     "DATE_FORMAT(u.created_at, '%Y-%m-%d %H:%i:%s'), "
     "DATE_FORMAT(u.updated_at, '%Y-%m-%d %H:%i:%s')";
 
 UserSummary user_from_row(const std::vector<std::string>& row) {
     UserSummary user;
-    if (row.size() < 8) {
+    if (row.size() < 7) {
         return user;
     }
     user.username = row[0];
@@ -42,9 +42,8 @@ UserSummary user_from_row(const std::vector<std::string>& row) {
     user.group_name = row[2];
     user.fixed_ip = row[3];
     user.enabled = parse_bool(row[4], false);
-    user.must_change_password = parse_bool(row[5], false);
-    user.created_at = row[6];
-    user.updated_at = row[7];
+    user.created_at = row[5];
+    user.updated_at = row[6];
     return user;
 }
 

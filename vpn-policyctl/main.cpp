@@ -6,6 +6,7 @@
 #include "vpn/password.h"
 #include "vpn/policy_store.h"
 #include "vpn/retention.h"
+#include "vpn/service/limits.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
 
@@ -259,6 +260,12 @@ void cmd_group_add(Db& db, const Flags& flags) {
         throw std::runtime_error(
             "group IP range is outside the tunnel network");
     }
+    if (validation.has_tunnel_network &&
+        (is_reserved_tunnel_address(validation.tunnel_network, start) ||
+         is_reserved_tunnel_address(validation.tunnel_network, end))) {
+        throw std::runtime_error(
+            "group IP range must not use network/broadcast/gateway addresses");
+    }
     const std::string description = flag_value(flags, "description");
 
     Transaction tx(db);
@@ -293,6 +300,7 @@ void cmd_group_rule_add(Db& db, const Flags& flags, const ValidationConfig& vc) 
         std::to_string(group->id) + ", '" +
         (type == RuleType::Allow ? "allow" : "deny") + "', '" +
         cidr.to_string() + "', 1)");
+    vpn::service::ensure_rule_limits(db, vc.max_rules_per_user);
     bump_policy_version(db);
     write_audit(db, "group-rule-add", group_name,
                 (type == RuleType::Allow ? "allow=" : "deny=") + cidr.to_string());
@@ -330,6 +338,18 @@ void cmd_user_add(Db& db, const Flags& flags) {
             !cidr_contains(validation.tunnel_network, fixed_ip)) {
             throw std::runtime_error(
                 "fixed IP is outside the tunnel network");
+        }
+        if (validation.has_tunnel_network &&
+            is_reserved_tunnel_address(validation.tunnel_network, fixed_ip)) {
+            throw std::runtime_error(
+                "fixed IP is a reserved tunnel address "
+                "(network/broadcast/gateway)");
+        }
+        for (const auto service_ip : validation.allowed_service_ips) {
+            if (fixed_ip == service_ip) {
+                throw std::runtime_error(
+                    "fixed IP conflicts with a configured server service IP");
+            }
         }
         fixed_ip_sql = "'" + format_ipv4(fixed_ip) + "'";
         audit_value = "fixed_ip=" + format_ipv4(fixed_ip);
@@ -408,6 +428,18 @@ void cmd_user_set(Db& db, const Flags& flags) {
             throw std::runtime_error(
                 "fixed IP is outside the tunnel network");
         }
+        if (validation.has_tunnel_network &&
+            is_reserved_tunnel_address(validation.tunnel_network, fixed_ip)) {
+            throw std::runtime_error(
+                "fixed IP is a reserved tunnel address "
+                "(network/broadcast/gateway)");
+        }
+        for (const auto service_ip : validation.allowed_service_ips) {
+            if (fixed_ip == service_ip) {
+                throw std::runtime_error(
+                    "fixed IP conflicts with a configured server service IP");
+            }
+        }
         fixed_ip_sql = "'" + format_ipv4(fixed_ip) + "'";
     }
 
@@ -416,6 +448,9 @@ void cmd_user_set(Db& db, const Flags& flags) {
         "UPDATE vpn_users SET group_id = " + std::to_string(group.id) +
         ", fixed_ip = " + fixed_ip_sql + ", enabled = " +
         (enabled ? "1" : "0") + " WHERE username = '" + db.quote(username) + "'");
+    const auto limits = load_validation_config(db);
+    vpn::service::ensure_rule_limits(db, limits.max_rules_per_user);
+    vpn::service::ensure_service_limits(db, limits.max_services_per_user);
     bump_policy_version(db);
     write_audit(db, "user-set", username,
                 "group=" + group.name + ",enabled=" + (enabled ? "1" : "0"));
@@ -444,6 +479,7 @@ void cmd_user_rule_add(Db& db, const Flags& flags, const ValidationConfig& vc) {
         db.quote(username) + "', '" +
         (type == RuleType::Allow ? "allow" : "deny") + "', '" +
         cidr.to_string() + "', 1)");
+    vpn::service::ensure_rule_limits(db, vc.max_rules_per_user);
     bump_policy_version(db);
     write_audit(db, "user-rule-add", username,
                 (type == RuleType::Allow ? "allow=" : "deny=") + cidr.to_string());
@@ -513,6 +549,7 @@ void cmd_service_add(Db& db, const Flags& flags, const ValidationConfig& vc) {
         "INSERT INTO vpn_server_services (scope_type, scope_id, service, enabled) "
         "VALUES ('" + db.quote(target.scope_type) + "', '" +
         db.quote(target.scope_id) + "', '" + service->to_string() + "', 1)");
+    vpn::service::ensure_service_limits(db, vc.max_services_per_user);
     bump_policy_version(db);
     write_audit(db, "service-add",
                 target.scope_type + ":" +
@@ -601,14 +638,13 @@ void cmd_group_show(Db& db, const Flags& flags) {
 
     std::cout << "users:\n";
     const auto users = db.query(
-        "SELECT username, IFNULL(fixed_ip, ''), enabled, must_change_password "
+        "SELECT username, IFNULL(fixed_ip, ''), enabled "
         "FROM vpn_users WHERE group_id = " + group_id +
         " ORDER BY username");
     for (const auto& row : users) {
-        if (row.size() >= 4) {
+        if (row.size() >= 3) {
             std::cout << "  " << row[0] << " " << row[1]
-                      << " enabled=" << row[2]
-                      << " must_change_password=" << row[3] << "\n";
+                      << " enabled=" << row[2] << "\n";
         }
     }
 
@@ -644,7 +680,7 @@ void cmd_user_list(Db& db, const Flags& flags) {
 
     std::string sql =
         "SELECT u.username, IFNULL(g.name, ''), IFNULL(u.fixed_ip, ''), "
-        "u.enabled, u.must_change_password "
+        "u.enabled "
         "FROM vpn_users u LEFT JOIN vpn_groups g ON g.id = u.group_id";
     if (!group.empty()) {
         sql += " WHERE g.name = '" + db.quote(group) + "'";
@@ -652,11 +688,11 @@ void cmd_user_list(Db& db, const Flags& flags) {
     sql += " ORDER BY g.name, u.username";
 
     const auto rows = db.query(sql);
-    std::cout << "username\tgroup\tfixed_ip\tenabled\tmust_change_password\n";
+    std::cout << "username\tgroup\tfixed_ip\tenabled\n";
     for (const auto& row : rows) {
-        if (row.size() >= 5) {
+        if (row.size() >= 4) {
             std::cout << row[0] << '\t' << row[1] << '\t' << row[2] << '\t'
-                      << row[3] << '\t' << row[4] << '\n';
+                      << row[3] << '\n';
         }
     }
 }
@@ -686,8 +722,6 @@ void cmd_show(Db& db, const Flags& flags) {
     std::cout << "display_name=" << data.user.display_name << "\n";
     std::cout << "group=" << data.group.name << "\n";
     std::cout << "enabled=" << (data.user.enabled ? "1" : "0") << "\n";
-    std::cout << "must_change_password="
-              << (data.user.must_change_password ? "1" : "0") << "\n";
     print_policy(policy);
 }
 
@@ -710,7 +744,7 @@ void cmd_password_reset(Db& db, const Flags& flags) {
     Transaction tx(db);
     db.execute(
         "UPDATE vpn_users SET password_hash = '" + db.quote(hash) +
-        "', password_updated_at = NOW(), must_change_password = 1 "
+        "', password_updated_at = NOW() "
         "WHERE username = '" + db.quote(username) + "'");
     write_audit(db, "password-reset", username, "algorithm=pbkdf2-sha256");
     tx.commit();

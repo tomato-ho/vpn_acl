@@ -137,12 +137,12 @@ void write_audit_as(Db& db,
 PolicyData load_policy(Db& db, const std::string& username) {
     const auto rows = db.query(
         "SELECT u.username, u.display_name, IFNULL(u.group_id, 0), "
-        "IFNULL(u.fixed_ip, ''), u.enabled, u.must_change_password, "
+        "IFNULL(u.fixed_ip, ''), u.enabled, "
         "IFNULL(g.id, 0), IFNULL(g.name, ''), IFNULL(g.ip_start, ''), "
         "IFNULL(g.ip_end, ''), IFNULL(g.description, '') "
         "FROM vpn_users u LEFT JOIN vpn_groups g ON g.id = u.group_id "
         "WHERE u.username = '" + db.quote(username) + "'");
-    if (rows.empty() || rows[0].size() < 11) {
+    if (rows.empty() || rows[0].size() < 10) {
         throw std::runtime_error("user not found: " + username);
     }
 
@@ -156,17 +156,16 @@ PolicyData load_policy(Db& db, const std::string& username) {
         data.user.has_fixed_ip = true;
     }
     data.user.enabled = parse_bool(row[4], false);
-    data.user.must_change_password = parse_bool(row[5], false);
 
-    data.group.id = parse_u32_or_throw(row[6], "group id");
-    data.group.name = row[7];
+    data.group.id = parse_u32_or_throw(row[5], "group id");
+    data.group.name = row[6];
+    if (!row[7].empty()) {
+        data.group.ip_start = ip_or_throw(row[7], "group ip_start");
+    }
     if (!row[8].empty()) {
-        data.group.ip_start = ip_or_throw(row[8], "group ip_start");
+        data.group.ip_end = ip_or_throw(row[8], "group ip_end");
     }
-    if (!row[9].empty()) {
-        data.group.ip_end = ip_or_throw(row[9], "group ip_end");
-    }
-    data.group.description = row[10];
+    data.group.description = row[9];
     data.user.group_name = data.group.name;
 
     const auto group_rules = db.query(

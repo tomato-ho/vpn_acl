@@ -22,7 +22,6 @@ const visible = computed({
 const form = reactive({
   password: '',
   confirm: '',
-  must_change_password: true,
 })
 const loading = ref(false)
 
@@ -32,7 +31,6 @@ watch(
     if (open) {
       form.password = ''
       form.confirm = ''
-      form.must_change_password = true
     }
   },
 )
@@ -50,7 +48,6 @@ async function submit() {
   try {
     await api.post(`/users/${encodeURI(props.username)}/password`, {
       password: form.password,
-      must_change_password: form.must_change_password,
     })
     ElMessage.success('密码已重置')
     emit('saved')
@@ -76,9 +73,6 @@ async function submit() {
       </el-form-item>
       <el-form-item label="确认密码">
         <el-input v-model="form.confirm" type="password" show-password />
-      </el-form-item>
-      <el-form-item label="强制改密">
-        <el-switch v-model="form.must_change_password" />
       </el-form-item>
     </el-form>
     <template #footer>

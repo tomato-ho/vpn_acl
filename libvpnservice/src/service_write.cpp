@@ -2,6 +2,7 @@
 
 #include "vpn/policy_store.h"
 #include "vpn/service/errors.h"
+#include "vpn/service/limits.h"
 #include "vpn/service/transaction.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
@@ -165,6 +166,9 @@ ServiceRow add_service(Db& db,
             db.quote(scope_type) + "', '" + db.quote(scope_id) + "', '" +
             db.quote(row.service) + "', " + (input.enabled ? "1" : "0") + ")");
         row.id = static_cast<std::uint32_t>(db.last_insert_id());
+        if (input.enabled) {
+            ensure_service_limits(db, validation.max_services_per_user);
+        }
         write_audit_as(db, operator_name, "service-add",
                        scope_type + ":" +
                            (scope_id.empty() ? "-" : scope_id),
@@ -280,6 +284,10 @@ ServiceRow update_service(Db& db,
             db.quote(after.service) + "', enabled = " +
             (after.enabled ? "1" : "0") + " WHERE id = " +
             std::to_string(service_id));
+        if (after.enabled && !before.enabled) {
+            const auto validation = load_validation_config(db);
+            ensure_service_limits(db, validation.max_services_per_user);
+        }
         write_audit_as(db, operator_name, "service-update",
                        after.scope_type + ":" +
                            (after.scope_id.empty() ? "-" : after.scope_id),

@@ -4,6 +4,7 @@
 #include "vpn/parse.h"
 #include "vpn/policy_store.h"
 #include "vpn/service/errors.h"
+#include "vpn/service/limits.h"
 #include "vpn/service/transaction.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
@@ -91,6 +92,12 @@ std::pair<std::string, std::string> validate_range(
          !cidr_contains(config.tunnel_network, end))) {
         fail(ErrorCode::validation,
              "group IP range is outside the tunnel network");
+    }
+    if (config.has_tunnel_network &&
+        (is_reserved_tunnel_address(config.tunnel_network, start) ||
+         is_reserved_tunnel_address(config.tunnel_network, end))) {
+        fail(ErrorCode::validation,
+             "group IP range must not use network/broadcast/gateway addresses");
     }
     return {format_ipv4(start), format_ipv4(end)};
 }
@@ -402,6 +409,7 @@ GroupRule add_group_rule(Db& db,
             std::to_string(group_id) + ", '" + rule.rule_type + "', '" +
             rule.cidr + "', " + (input.enabled ? "1" : "0") + ")");
         rule.id = static_cast<std::uint32_t>(db.last_insert_id());
+        ensure_rule_limits(db, validation.max_rules_per_user);
         write_audit_as(db, operator_name, "group-rule-add",
                        std::to_string(group_id), "", rule_json(rule).dump());
         bump_policy_version(db);
@@ -450,6 +458,10 @@ GroupRule update_group_rule(Db& db,
         std::string(enabled ? "1" : "0") + " WHERE id = " +
         std::to_string(rule_id) + " AND group_id = " +
         std::to_string(group_id));
+    if (enabled) {
+        const auto validation = load_validation_config(db);
+        ensure_rule_limits(db, validation.max_rules_per_user);
+    }
     write_audit_as(db, operator_name, "group-rule-update",
                    std::to_string(group_id), rule_json(before).dump(),
                    rule_json(after).dump());

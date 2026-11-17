@@ -30,7 +30,6 @@ const form = reactive({
   password: '',
   confirm: '',
   enabled: true,
-  must_change_password: true,
 })
 
 const loading = ref(false)
@@ -43,8 +42,6 @@ function reset() {
   form.password = ''
   form.confirm = ''
   form.enabled = props.mode === 'edit' ? props.user?.enabled ?? true : true
-  form.must_change_password =
-    props.mode === 'edit' ? props.user?.must_change_password ?? false : true
 }
 
 watch(
@@ -81,7 +78,6 @@ async function submit() {
         group: form.group,
         fixed_ip: form.fixed_ip,
         password: form.password,
-        must_change_password: form.must_change_password,
       })
       ElMessage.success('用户已创建')
     } else {
@@ -90,7 +86,6 @@ async function submit() {
         group: form.group,
         fixed_ip: form.fixed_ip,
         enabled: form.enabled,
-        must_change_password: form.must_change_password,
       })
       ElMessage.success('用户已更新')
     }
@@ -141,9 +136,6 @@ async function submit() {
       </template>
       <el-form-item v-if="mode === 'edit'" label="启用">
         <el-switch v-model="form.enabled" />
-      </el-form-item>
-      <el-form-item label="强制改密">
-        <el-switch v-model="form.must_change_password" />
       </el-form-item>
     </el-form>
     <template #footer>

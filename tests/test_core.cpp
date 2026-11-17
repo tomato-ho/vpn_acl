@@ -82,6 +82,19 @@ void test_validation() {
     check(!vpn::parse_service("10.8.0.1:0/udp"), "reject port zero");
     check(!vpn::parse_service("10.8.0.1:53/icmp"), "reject invalid protocol");
 
+    const auto tunnel = vpn::parse_cidr("10.9.100.0/24");
+    check(tunnel.has_value(), "parse tunnel");
+    check(vpn::is_reserved_tunnel_address(*tunnel, *vpn::parse_ipv4("10.9.100.0")),
+          "reject tunnel network address");
+    check(vpn::is_reserved_tunnel_address(*tunnel, *vpn::parse_ipv4("10.9.100.1")),
+          "reject tunnel gateway");
+    check(vpn::is_reserved_tunnel_address(*tunnel, *vpn::parse_ipv4("10.9.100.255")),
+          "reject tunnel broadcast");
+    check(!vpn::is_reserved_tunnel_address(*tunnel, *vpn::parse_ipv4("10.9.100.2")),
+          "allow first client address");
+    check(!vpn::is_reserved_tunnel_address(*tunnel, *vpn::parse_ipv4("10.9.100.22")),
+          "allow ordinary client address");
+
     vpn::PolicyData data;
     data.user.username = "alice";
     data.user.display_name = "Alice";

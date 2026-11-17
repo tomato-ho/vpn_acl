@@ -2,6 +2,27 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.4] - 2026-11-17
+
+配置边界、上限、认证风控与健康检查修复。
+
+### Fixed
+
+- 固定 IP / 组范围拒绝网络地址、广播地址、OpenVPN 网关地址，以及
+  `allowed_service_ips` 中的服务地址；CLI、API、策略计算和 settings 变更均校验。
+- `max_rules_per_user` / `max_services_per_user` 在新增或启用组规则、用户规则、
+  服务时立即校验，避免写入后用户连接失败或在线刷新时被移除规则。
+- `/readyz` 的 `status_file` 增加 mtime 新鲜度检查（30 秒），OpenVPN 停止刷新
+  status 时不再误报健康。
+- `archive_session` 重试更新改为单调：`bytes_in/out` 取 `GREATEST`，
+  `stop_time` 取 `LEAST`，避免数据库重试覆盖历史。
+- VPN 认证失败限流改为按 `username + remote_ip`，不再因为一个 IP 的失败把
+  同一用户名在所有来源上锁死；未知用户增加 dummy PBKDF2 以减小枚举时序差异。
+- 禁用/未设置密码/错误密码统一返回“用户名或密码错误”，详细原因仅写审计日志。
+- 移除 `must_change_password`：删除 UI 开关/列、API/CLI 字段、认证逻辑，并新增
+  `sql/013_remove_must_change_password.sql` 删除数据库列。
+- 新增 `deploy/test-guards.sh`：固定 IP/组范围、规则/服务上限、认证跨 IP 限流。
+
 ## [0.3.3] - 2026-11-17
 
 修复恢复会话造成的重复/覆盖历史记录。
@@ -182,7 +203,7 @@
 
 - 仅 IPv4；单实例，无 HA；不支持 WireGuard。
 - `deny` 的真实语义是"不推送路由 + 网关侧 drop"，客户端从其他路径直达时无法阻止。
-- VPN 用户没有自助改密页面；`must_change_password` 目前只记录不阻断。
+- VPN 用户没有自助改密页面；`must_change_password` 已移除，密码由管理员统一维护。
 - `install.sh` 不修改 firewalld，需要手工放行 80/443/1194。
 - 用量/审计的数据留存需要手工或外部定时任务触发。
 - 可选的 FreeRADIUS 容器依赖第三方仓库，不随本项目维护。

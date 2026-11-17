@@ -621,10 +621,13 @@ void archive_session(Db& db,
         std::to_string(bytes_out) + ", '" +
         db.quote(terminate_cause_name(terminate_cause)) + "') "
         "ON DUPLICATE KEY UPDATE session_id = VALUES(session_id), "
-        "stop_time = VALUES(stop_time), "
-        "duration_seconds = VALUES(duration_seconds), "
-        "bytes_in = VALUES(bytes_in), bytes_out = VALUES(bytes_out), "
-        "terminate_cause = VALUES(terminate_cause)");
+        "stop_time = LEAST(stop_time, VALUES(stop_time)), "
+        "duration_seconds = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, "
+        "LEAST(stop_time, VALUES(stop_time)))), "
+        "bytes_in = GREATEST(bytes_in, VALUES(bytes_in)), "
+        "bytes_out = GREATEST(bytes_out, VALUES(bytes_out)), "
+        "terminate_cause = IF(terminate_cause = '', "
+        "VALUES(terminate_cause), terminate_cause)");
 }
 
 void send_start(AccountingWorker* accounting,

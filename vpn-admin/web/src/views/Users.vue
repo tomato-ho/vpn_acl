@@ -184,12 +184,6 @@ onMounted(async () => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="需改密" width="100">
-          <template #default="{ row }">
-            <el-tag v-if="row.must_change_password" type="warning">是</el-tag>
-            <span v-else class="muted">否</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="created_at" label="创建时间" min-width="180" />
         <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">

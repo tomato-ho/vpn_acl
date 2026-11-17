@@ -97,12 +97,14 @@ bool recently_failed(Db& db, const std::string& username,
     const std::string window =
         "created_at > NOW() - INTERVAL " + std::to_string(kFailureWindowSeconds) +
         " SECOND";
-    const auto by_user = db.query(
+    // 按 username + IP 限流，避免单个 IP 故意失败把该用户名在所有来源上锁死。
+    const auto by_pair = db.query(
         "SELECT COUNT(*) FROM vpn_auth_log WHERE username = '" +
-        db.quote(username) + "' AND success = 0 AND " + window);
-    if (!by_user.empty() && !by_user[0].empty()) {
+        db.quote(username) + "' AND remote_ip = '" + db.quote(remote_ip) +
+        "' AND success = 0 AND " + window);
+    if (!by_pair.empty() && !by_pair[0].empty()) {
         try {
-            if (static_cast<unsigned int>(std::stoul(by_user[0][0])) >=
+            if (static_cast<unsigned int>(std::stoul(by_pair[0][0])) >=
                 kMaxFailures) {
                 return true;
             }
@@ -166,35 +168,32 @@ int main(int argc, char** argv) {
         }
 
         const auto rows = db.query(
-            "SELECT enabled, must_change_password, password_hash "
+            "SELECT enabled, password_hash "
             "FROM vpn_users WHERE username = '" +
             db.quote(credentials.username) + "'");
-        if (rows.empty() || rows[0].size() < 3) {
+        if (rows.empty() || rows[0].size() < 2) {
+            // 不存在用户也做一次 PBKDF2，减少用户名枚举的时序差异。
+            (void)pbkdf2_sha256_user(credentials.password);
             return reject(db, credentials, remote_ip, "unknown-user",
                           "用户名或密码错误");
         }
 
         const bool enabled = rows[0][0] == "1";
-        const bool must_change = rows[0][1] == "1";
-        const std::string& hash = rows[0][2];
+        const std::string& hash = rows[0][1];
 
-        if (!enabled) {
-            return reject(db, credentials, remote_ip, "disabled",
-                          "账号已停用");
-        }
-        if (hash.empty()) {
-            return reject(db, credentials, remote_ip, "no-password",
-                          "账号未设置密码");
+        if (!enabled || hash.empty()) {
+            // 账号状态不向客户端暴露；同时做一次 PBKDF2，避免明显的时序差异。
+            (void)pbkdf2_sha256_user(credentials.password);
+            return reject(db, credentials, remote_ip,
+                          enabled ? "no-password" : "disabled",
+                          "用户名或密码错误");
         }
         if (!verify_user_password(credentials.password, hash)) {
             return reject(db, credentials, remote_ip, "bad-password",
                           "用户名或密码错误");
         }
 
-        // 登录成功；must_change_password 只做记录，避免把用户锁在门外
-        // （自助改密页面属于后续的前端功能）。
-        log_attempt(db, credentials.username, remote_ip, true,
-                    must_change ? "must-change-password" : "");
+        log_attempt(db, credentials.username, remote_ip, true, "");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "vpn-auth-check: " << error.what() << "\n";

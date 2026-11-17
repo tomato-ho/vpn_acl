@@ -81,7 +81,8 @@ output; the default path has no FreeRADIUS/PAM dependency.
   serialized by a process-wide mutex in `vpn-policyd`; reconcile runs on a timer
   thread, so this mutex is what prevents orphan cleanup from racing a new connect.
 - Auth audit: `vpn_auth_log` (username, remote_ip, success, reason). Rate limiting is
-  5 failures/5 min per username and 20/5 min per IP.
+  5 failures/5 min per username+IP and 20/5 min per IP; unknown users perform a
+  dummy PBKDF2 and client-visible errors are generic.
 - Access audit: nft sets `flows` / `flows_rev` / `flows_deny` (key `ip saddr . ip daddr`,
   per-element `counter`; allow/rev timeout 24h, deny 10m). Forward/input chains put
   `iifname tun0 ... vmap @user_fwd|user_in` **before** the generic
@@ -98,6 +99,11 @@ output; the default path has no FreeRADIUS/PAM dependency.
   are missing or were created by an older timeout; rebuild resets `vpn_flow_state`.
   Startup verifies `vpn_access_log`, `vpn_flow_state` and
   `vpn_session_history.session_id` and exits if migrations are missing.
+- Fixed tunnel IPs must not be the tunnel network/broadcast address or the
+  OpenVPN gateway (first host), and must not equal `allowed_service_ips`;
+  `validate_fixed_ip`, group range validation, settings updates and
+  `compute_effective_policy` all enforce this. `max_rules_per_user` /
+  `max_services_per_user` are enforced on writes/enables, not only at connect.
 - Admin API auth is a session cookie plus `X-CSRF-Token` on non-GET requests; use the
   existing `require_session(..., true)` path for new mutating routes.
 
@@ -141,9 +147,11 @@ output; the default path has no FreeRADIUS/PAM dependency.
   `deploy/test-access-audit.sh` covers allow/deny flow
   accounting (ICMP + TCP upload/download), mid-transfer policy revocation,
   policyd restart continuity and final sampling;
-  it temporarily adds `tun0`/the peer veth to the firewalld `trusted` zone and
-  restores it on exit. `deploy/soak-faults.sh` injects faults on a schedule and
-  `deploy/soak-monitor.sh` samples health/resources to CSV for long runs.
+  `deploy/test-guards.sh` covers fixed-IP/group-range reservation, write-time
+  rule/service limits and per-IP/username auth throttling.
+  `test-access-audit.sh` temporarily adds `tun0`/the peer veth to the firewalld
+  `trusted` zone and restores it on exit. `deploy/soak-faults.sh` injects faults on
+  a schedule and `deploy/soak-monitor.sh` samples health/resources to CSV for long runs.
 - `install.sh` does not touch firewalld: open `http`, `https`, `1194/udp` manually and
   add masquerade for the tunnel network on routed deployments.
 - Compose runs six services: `mariadb`, `policyd`, `openvpn`, `admin` (`app`), `web`,

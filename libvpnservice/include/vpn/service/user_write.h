@@ -31,7 +31,6 @@ struct CreateUserInput {
     std::string group;
     std::string fixed_ip;
     std::string password;
-    bool must_change_password{true};
 };
 
 struct UpdateUserInput {
@@ -39,12 +38,10 @@ struct UpdateUserInput {
     std::optional<std::string> group;
     std::optional<std::string> fixed_ip;
     std::optional<bool> enabled;
-    std::optional<bool> must_change_password;
 };
 
 struct PasswordResetInput {
     std::string password;
-    bool must_change_password{true};
 };
 
 struct UserRuleInput {

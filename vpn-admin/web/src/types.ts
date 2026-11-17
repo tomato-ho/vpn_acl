@@ -4,7 +4,6 @@ export interface UserRow {
   group: string
   fixed_ip: string
   enabled: boolean
-  must_change_password: boolean
   created_at: string
   updated_at: string
 }
