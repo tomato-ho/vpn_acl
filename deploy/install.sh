@@ -15,6 +15,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+# 本机健康检查必须绕过 HTTP 代理（很多环境全局设置了 http_proxy）。
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="$no_proxy"
+
 CONFIG_DIR=${VPN_CONFIG_DIR:-/etc/vpn-policy}
 RUN_DIR=${VPN_RUN_DIR:-/run/vpn-policyd}
 OPENVPN_RUN_DIR=${VPN_OPENVPN_RUN_DIR:-/run/openvpn-server}
@@ -626,13 +630,13 @@ seed_demo() {
 wait_ready() {
     local reloads=0
     for _ in $(seq 1 60); do
-        if curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+        if curl --noproxy '*' -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
             return 0
         fi
         # 容器 DNS 抖动会导致 admin 连不上 mariadb；刷新一次 podman 网络再试
-        if ((reloads < 3)) &&
-            podman ps --format '{{.Names}}' 2>/dev/null |
-                grep -q '^vpn-admin$'; then
+        local running_names
+        running_names=$(podman ps --format '{{.Names}}' 2>/dev/null || true)
+        if ((reloads < 3)) && grep -qx 'vpn-admin' <<< "$running_names"; then
             if ! podman exec vpn-admin getent hosts mariadb >/dev/null 2>&1; then
                 reloads=$((reloads + 1))
                 warn "容器内解析不到 mariadb，刷新 podman 网络（$reloads/3）"

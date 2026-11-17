@@ -2,6 +2,22 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.2.2] - 2026-11-17
+
+运维与测试脚本修复。
+
+### Fixed
+
+- `vpn-admin` 处理 `SIGTERM`/`SIGINT`：容器内 PID 1 默认忽略 SIGTERM，
+  之前停止/重启要等 10 秒被 SIGKILL，现在 <0.2 秒优雅退出。
+- `retention` 命令加 `trap`，同样避免 PID 1 忽略 TERM。
+- `readyz` 的数据库检查失败时限流打印原因（每 30 秒最多一条）。
+- 所有脚本的本地健康检查使用 `curl --noproxy '*'`，并在启动时把
+  `127.0.0.1/localhost/::1` 加入 `no_proxy`；此前在设置了 `http_proxy`
+  的环境里会把本机请求发给代理，导致误判。
+- 修复脚本里 `podman ps | grep -q` 在 `pipefail` 下触发 SIGPIPE 的误判。
+- `soak-faults` 把 precheck 跳过计入 `skipped`，不再算作失败。
+
 ## [0.2.1] - 2026-11-16
 
 并发与会话匹配的正确性修复。

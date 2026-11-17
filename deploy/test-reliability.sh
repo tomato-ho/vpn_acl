@@ -15,6 +15,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+# 本机健康检查必须绕过 HTTP 代理（很多环境全局设置了 http_proxy）。
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="$no_proxy"
+
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
@@ -48,10 +52,9 @@ MARKER_DIR=/run/vpn-policyd/clients
 sql() { podman exec -i vpn-mariadb mariadb -uroot -p"$ROOT_PW" "$DB" "$@"; }
 sqlq() { podman exec vpn-mariadb mariadb -uroot -p"$ROOT_PW" "$DB" -N -e "$1"; }
 
-podman ps --format '{{.Names}}' | grep -qx vpn-policyd ||
-    fail "vpn-policyd 未运行"
-podman ps --format '{{.Names}}' | grep -qx vpn-mariadb ||
-    fail "vpn-mariadb 未运行"
+running_names=$(podman ps --format '{{.Names}}' 2>/dev/null || true)
+grep -qx vpn-policyd <<< "$running_names" || fail "vpn-policyd 未运行"
+grep -qx vpn-mariadb <<< "$running_names" || fail "vpn-mariadb 未运行"
 
 if ! $POLICYCTL --config "$CONFIG" group-show staff >/dev/null 2>&1; then
     log "创建测试组 staff"
@@ -243,12 +246,12 @@ ok "B: 全部正常下线"
 
 # ---------------------------------------------------------------- C. 版本轮询
 log "C. 直接递增 vpn_policy_version（不调 IPC）"
-before=$(curl -s http://127.0.0.1:8080/metrics |
+before=$(curl --noproxy '*' -s http://127.0.0.1:8080/metrics |
     awk '/^vpn_policyd_refresh_total /{print $2}')
 sql -e "UPDATE vpn_policy_version SET version=version+1, updated_at=NOW()
          WHERE id=1" >/dev/null
 sleep 14
-after=$(curl -s http://127.0.0.1:8080/metrics |
+after=$(curl --noproxy '*' -s http://127.0.0.1:8080/metrics |
     awk '/^vpn_policyd_refresh_total /{print $2}')
 [[ -n "$before" && -n "$after" ]] || fail "C: 读不到 refresh_total"
 [[ "$after" -gt "$before" ]] ||

@@ -13,6 +13,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+# 本机健康检查必须绕过 HTTP 代理（很多环境全局设置了 http_proxy）。
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="$no_proxy"
+
 OUT=${SOAK_MONITOR_CSV:-/var/log/vpn-soak.csv}
 INTERVAL=300
 DURATION=0
@@ -64,8 +68,8 @@ log "采样开始 interval=${INTERVAL}s duration=${DURATION}s -> $OUT"
 
 while true; do
     ts=$(date -Is)
-    ready_body=$(curl -s --max-time 3 http://127.0.0.1:8080/readyz 2>/dev/null || true)
-    ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+    ready_body=$(curl --noproxy '*' -s --max-time 3 http://127.0.0.1:8080/readyz 2>/dev/null || true)
+    ready=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 3 \
         http://127.0.0.1:8080/readyz 2>/dev/null || true)
     ready=${ready:-000}
     db_flag=$(grep -o '"database":[a-z]*' <<< "$ready_body" | cut -d: -f2)
@@ -93,7 +97,7 @@ while true; do
         restarts=$((restarts + ${value:-0}))
     done
 
-    metrics=$(curl -s --max-time 3 http://127.0.0.1:8080/metrics 2>/dev/null || true)
+    metrics=$(curl --noproxy '*' -s --max-time 3 http://127.0.0.1:8080/metrics 2>/dev/null || true)
     refresh_total=$(awk '/^vpn_policyd_refresh_total /{print $2}' <<< "$metrics" | tail -1)
     reconcile_total=$(awk '/^vpn_policyd_reconcile_total /{print $2}' <<< "$metrics" | tail -1)
     refresh_errors=$(awk '/^vpn_policyd_refresh_errors_total /{print $2}' <<< "$metrics" | tail -1)

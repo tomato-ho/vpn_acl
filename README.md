@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.2.1**
+当前版本：**0.2.2**
 
 ![Dashboard](images/dashboard.png)
 

@@ -14,6 +14,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+# 本机健康检查必须绕过 HTTP 代理（很多环境全局设置了 http_proxy）。
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="$no_proxy"
+
 LOG_FILE=${SOAK_LOG:-/var/log/vpn-soak-faults.log}
 CSV_FILE=${SOAK_CSV:-/var/log/vpn-soak-faults.csv}
 POLICYCTL=./build/vpn-policyctl
@@ -81,7 +85,7 @@ sql() { podman exec -i vpn-mariadb mariadb -uroot -p"$ROOT_PW" "$DB_NAME" "$@"; 
 sqlq() { podman exec vpn-mariadb mariadb -uroot -p"$ROOT_PW" "$DB_NAME" -N -e "$1"; }
 
 readyz() {
-    curl -fsS --max-time 3 http://127.0.0.1:8080/readyz >/dev/null 2>&1
+    curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8080/readyz >/dev/null 2>&1
 }
 
 wait_ready() {
@@ -125,7 +129,7 @@ wait_mariadb_healthy() {
 }
 
 refresh_total() {
-    curl -s --max-time 3 http://127.0.0.1:8080/metrics 2>/dev/null |
+    curl --noproxy '*' -s --max-time 3 http://127.0.0.1:8080/metrics 2>/dev/null |
         awk '/^vpn_policyd_refresh_total /{print $2}' | tail -1
 }
 
@@ -298,10 +302,9 @@ fi
 trap cleanup EXIT
 trap 'log "收到中断，准备退出"; exit 130' INT TERM
 
-podman ps --format '{{.Names}}' | grep -qx vpn-mariadb ||
-    fail "vpn-mariadb 未运行"
-podman ps --format '{{.Names}}' | grep -qx vpn-policyd ||
-    fail "vpn-policyd 未运行"
+running_names=$(podman ps --format '{{.Names}}' 2>/dev/null || true)
+grep -qx vpn-mariadb <<< "$running_names" || fail "vpn-mariadb 未运行"
+grep -qx vpn-policyd <<< "$running_names" || fail "vpn-policyd 未运行"
 if ! wait_ready 60; then
     log "初始 readyz 不健康，等待恢复（不退出）"
     if ! wait_ready "$TIMEOUT"; then
@@ -321,6 +324,7 @@ end_at=$(( $(date +%s) + DURATION ))
 index=0
 total=0
 success=0
+skipped=0
 failure=0
 max_recovery=0
 
@@ -333,7 +337,7 @@ while (( $(date +%s) < end_at )); do
         log "precheck_failed scenario=$scenario（当前不健康，跳过本轮）"
         printf '%s,%s,precheck_failed,0,false,%s\n' \
             "$(date -Is)" "$scenario" "$(container_restarts)" >> "$CSV_FILE"
-        failure=$((failure + 1))
+        skipped=$((skipped + 1))
     else
         log "注入 scenario=$scenario"
         started=$(date +%s)
@@ -363,7 +367,7 @@ while (( $(date +%s) < end_at )); do
     sleep "$sleep_for"
 done
 
-log "结束：total=$total ok=$success failed=$failure max_recovery=${max_recovery}s"
+log "结束：total=$total ok=$success skipped=$skipped failed=$failure max_recovery=${max_recovery}s"
 log "日志：$LOG_FILE  CSV：$CSV_FILE"
 
 [[ $failure -eq 0 ]]
