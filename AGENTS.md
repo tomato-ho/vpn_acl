@@ -77,13 +77,21 @@ output; the default path has no FreeRADIUS/PAM dependency.
 - Auth audit: `vpn_auth_log` (username, remote_ip, success, reason). Rate limiting is
   5 failures/5 min per username and 20/5 min per IP.
 - Access audit: nft sets `flows` / `flows_rev` / `flows_deny` (key `ip saddr . ip daddr`,
-  per-element `counter`, 10m timeout). `vpn-policyd` samples them every
+  per-element `counter`; allow/rev timeout 24h, deny 10m). Forward/input chains put
+  `iifname tun0 ... vmap @user_fwd|user_in` **before** the generic
+  `ct state established,related accept`, so established traffic is counted and a
+  revoked policy immediately drops client→target packets (reverse traffic still hits
+  the counter/accept rule first; it is counted but not policy-filtered).
+  `vpn-policyd` samples them every
   `flow_sample_interval` seconds into `vpn_access_log` (one row per
-  session × dest × allow/deny) and stores the raw counters in `vpn_flow_state` so a
-  restart continues from the previous baseline. Always sample before
-  `remove_session`, then flush that client's set elements and state rows.
+  session × dest × allow/deny) inside one DB transaction and stores the raw counters
+  in `vpn_flow_state` so a restart continues from the previous baseline.
+  Cleanup order is: final sample → remove nft rules → archive session → flush set
+  elements/state; archive failure keeps counters for retry.
   `vpn-policyd` rebuilds the whole `vpn_acl` table in one atomic script when the sets
-  are missing (upgrade path).
+  are missing or were created by an older timeout; rebuild resets `vpn_flow_state`.
+  Startup verifies `vpn_access_log`, `vpn_flow_state` and
+  `vpn_session_history.session_id` and exits if migrations are missing.
 - Admin API auth is a session cookie plus `X-CSRF-Token` on non-GET requests; use the
   existing `require_session(..., true)` path for new mutating routes.
 
@@ -97,8 +105,10 @@ output; the default path has no FreeRADIUS/PAM dependency.
   `radius_secret` (`radius_timeout_ms`, `radius_retries`). Start FreeRADIUS with
   `podman-compose --profile radius up -d`. There is no radcli config file.
 - Access audit sampling: `flow_sample_interval` (default 30s, clamped 5..300) must stay
-  well below the nft set timeout (10m). `retention-cleanup --access-days N` controls
-  `vpn_access_log` / `vpn_flow_state` retention (default 180 days).
+  below the allow/rev set timeout (24h) and deny timeout (10m).
+  `retention-cleanup --access-days N` controls `vpn_access_log` / `vpn_flow_state`
+  retention (default 180 days). The policyd startup schema check requires the
+  migrations, so deploy `deploy/migrate.sh` before replacing binaries.
 - A config path that is a directory resolves to `<dir>/vpn-policy.conf`. Defaults:
   `vpn-policyctl`/`vpn-client-connect`/`vpn-auth-check` use `/etc/vpn-policy/config`,
   `vpn-policyd` uses `policyd.conf`, and `vpn-admin` uses `admin.conf`.
@@ -118,7 +128,8 @@ output; the default path has no FreeRADIUS/PAM dependency.
 - Reliability regression: `deploy/test-reliability.sh` (needs a running stack)
   covers reconnect isolation, concurrent connects, policy-version polling and
   reconcile recovery. `deploy/test-access-audit.sh` covers allow/deny flow
-  accounting (real client in netns), policyd restart continuity and final sampling;
+  accounting (ICMP + TCP upload/download), mid-transfer policy revocation,
+  policyd restart continuity and final sampling;
   it temporarily adds `tun0`/the peer veth to the firewalld `trusted` zone and
   restores it on exit. `deploy/soak-faults.sh` injects faults on a schedule and
   `deploy/soak-monitor.sh` samples health/resources to CSV for long runs.

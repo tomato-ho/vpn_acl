@@ -20,7 +20,6 @@ const total = ref(0)
 const stats = ref<SessionHistoryStats | null>(null)
 const accessOpen = ref(false)
 const accessSessionId = ref('')
-const accessUsername = ref('')
 
 function buildParams(withPage: boolean): Record<string, unknown> {
   const params: Record<string, unknown> = {
@@ -120,7 +119,6 @@ function stateType(state: string): 'success' | 'info' | 'warning' {
 function showAccess(row: unknown) {
   const session = row as HistorySession
   accessSessionId.value = session.session_id ?? ''
-  accessUsername.value = session.username
   accessOpen.value = true
 }
 
@@ -227,7 +225,12 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="showAccess(row)">
+            <el-button
+              v-if="row.session_id"
+              link
+              type="primary"
+              @click="showAccess(row)"
+            >
               访问记录
             </el-button>
           </template>
@@ -250,7 +253,6 @@ onMounted(load)
     <AccessLogDialog
       v-model="accessOpen"
       :session-id="accessSessionId"
-      :username="accessUsername"
     />
   </div>
 </template>

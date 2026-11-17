@@ -2,6 +2,35 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.1] - 2026-11-17
+
+访问审计的计量与策略正确性修复。
+
+### Fixed
+
+- **上行字节严重少计**：`ct state established,related accept` 原本排在 per-user
+  策略链之前，TCP/UDP/ICMP 长连接只有首个包会被计入 `flows`。现在 `tun0` 的每个
+  包都先经过 `vmap @user_fwd` / `@user_in`，允许规则逐包计数。
+- **撤回权限对已建立连接不生效**：同一个顺序问题导致已建立的客户端→目标流量
+  不会被新策略 drop；现在撤回 allow 后，客户端发出的包会立即被拒绝并写入
+  `deny` 审计（反向在途数据仍可能短暂到达客户端）。
+- 客户端隔离（`tun0 -> tun0`）移动到策略链之前，并把尝试记录为 deny。
+- 会话清理顺序改为：最终采样 → 删 nft 规则 → 归档 → 清集合/基线；此前 DB
+  归档失败时计数器已被清空，重试会永久丢失最后一段流量。
+- 采样写入包在单个数据库事务中，避免 access_log 与 flow_state 部分成功导致
+  下一轮重复计数。
+- `interim_update` 不再依赖 RADIUS accounting：默认关闭 accounting 时也会更新
+  `vpn_sessions.bytes_in/out` 与 `last_seen`，reconcile 归档不再丢用量。
+- allow/rev 集合超时从 10 分钟改为 24 小时，deny 保持 10 分钟；reconcile 会清理
+  不属于在线会话的残留元素。
+- policyd 启动时校验审计 schema；升级未执行 `deploy/migrate.sh` 会直接退出并
+  提示，而不是半运行。
+- 升级时如果检测到旧版本集合（超时不一致），原子重建 `vpn_acl` 并重置
+  `vpn_flow_state` 基线。
+- `deploy/test-access-audit.sh` 增加 TCP 大流量、精确字节断言、传输中撤回权限
+  测试；`test-reliability.sh` 的 reconcile 补建改为轮询，避免固定 sleep 抖动。
+- 历史会话没有 `session_id` 时不显示「访问记录」（不再按用户名近似混查）。
+
 ## [0.3.0] - 2026-11-17
 
 访问审计：记录每个会话访问了哪些目标、哪些被拒绝，以及上下行字节。

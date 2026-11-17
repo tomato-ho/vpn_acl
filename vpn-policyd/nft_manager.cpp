@@ -439,8 +439,49 @@ bool NftManager::has_flow_sets(bool* present) {
             return true;
         }
     }
-    if (present) {
-        *present = true;
+
+    // 旧版本的集合超时是 10m。超时不一致说明规则/集合结构来自旧版本，
+    // 需要重建；同一版本重启则保留集合，避免丢失计数器。
+    constexpr std::uint64_t kExpectedFlowTimeout = 24 * 60 * 60;
+    std::string output;
+    if (!run_capture({"-j", "list", "set", "inet", table_, kFlowSetAllowUp},
+                     &output, nullptr)) {
+        return true;
+    }
+    const auto root = nlohmann::json::parse(output, nullptr, false);
+    if (root.is_discarded() || !root.is_object() ||
+        !root.contains("nftables") || !root["nftables"].is_array()) {
+        return true;
+    }
+    for (const auto& item : root["nftables"]) {
+        if (!item.contains("set") || !item["set"].is_object()) {
+            continue;
+        }
+        const auto& set = item["set"];
+        if (set.value("name", "") != kFlowSetAllowUp) {
+            continue;
+        }
+        if (!set.contains("timeout")) {
+            return true;
+        }
+        const auto& timeout = set["timeout"];
+        std::uint64_t value = 0;
+        if (timeout.is_number_unsigned()) {
+            value = timeout.get<std::uint64_t>();
+        } else if (timeout.is_number_integer()) {
+            const auto signed_value = timeout.get<std::int64_t>();
+            value = signed_value > 0 ? static_cast<std::uint64_t>(signed_value)
+                                     : 0;
+        } else {
+            return true;
+        }
+        if (value != kExpectedFlowTimeout) {
+            return true;
+        }
+        if (present) {
+            *present = true;
+        }
+        return true;
     }
     return true;
 }
@@ -610,6 +651,41 @@ bool NftManager::remove_session(const std::string& username,
     update.virtual_ip = virtual_ip;
     update.remove = true;
     return apply_updates({update}, nullptr, error);
+}
+
+bool NftManager::cleanup_flow_elements(const std::set<std::string>& keep_ips,
+                                       std::size_t* removed,
+                                       std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (removed) {
+        *removed = 0;
+    }
+    if (dry_run_ || !table_exists()) {
+        return true;
+    }
+
+    std::vector<FlowCounter> counters;
+    if (!read_flow_counters(&counters, error)) {
+        return false;
+    }
+
+    std::string script;
+    std::size_t count = 0;
+    for (const auto& counter : counters) {
+        if (keep_ips.find(counter.src_ip) != keep_ips.end()) {
+            continue;
+        }
+        script += "delete element inet " + table_ + " " + counter.set_name +
+                  " { " + counter.src_ip + " . " + counter.dest_ip + " }\n";
+        ++count;
+    }
+    if (removed) {
+        *removed = count;
+    }
+    if (script.empty()) {
+        return true;
+    }
+    return run_script(script, error);
 }
 
 bool NftManager::cleanup_orphans(const std::set<std::string>& keep_ips,

@@ -54,6 +54,10 @@ public:
     // 原子重建表：delete table + base + 给定会话。
     bool rebuild(const std::vector<NftSessionUpdate>& sessions,
                  std::string* error);
+    // 删除不属于任何在线客户端的审计集合元素（崩溃/漏清理后的兜底）。
+    bool cleanup_flow_elements(const std::set<std::string>& keep_ips,
+                               std::size_t* removed,
+                               std::string* error);
     bool cleanup_orphans(const std::set<std::string>& keep_ips,
                          const std::set<std::string>& keep_chains,
                          std::size_t* removed_elements,

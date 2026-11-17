@@ -311,6 +311,14 @@ std::optional<std::time_t> parse_start_time(const std::string& value) {
     return static_cast<std::time_t>(parsed);
 }
 
+bool schema_is_current(Db& db) {
+    // 只探测列/表是否存在，不关心数据。
+    db.query("SELECT session_id FROM vpn_session_history LIMIT 1");
+    db.query("SELECT 1 FROM vpn_access_log LIMIT 1");
+    db.query("SELECT 1 FROM vpn_flow_state LIMIT 1");
+    return true;
+}
+
 int run_check(const PolicydConfig& config, bool require_db) {
     int failures = 0;
     auto fail_check = [&failures](const std::string& message) {
@@ -362,6 +370,17 @@ int run_check(const PolicydConfig& config, bool require_db) {
         Db db(config.db);
         db.connect();
         db.query("SELECT 1");
+        try {
+            schema_is_current(db);
+        } catch (const std::exception& exception) {
+            if (require_db) {
+                fail_check(std::string("database schema is outdated: ") +
+                           exception.what());
+            } else {
+                warn_check(std::string("database schema is outdated: ") +
+                           exception.what());
+            }
+        }
     } catch (const std::exception& exception) {
         if (require_db) {
             fail_check(std::string("database check failed: ") + exception.what());
@@ -703,6 +722,36 @@ void delete_flow_state(Db& db, const std::string& session_id) {
                db.quote(session_id) + "'");
 }
 
+// 采样写入必须原子：access_log 与 flow_state 任一失败都不能留下"已加字节
+// 但基线未前进"的状态，否则下一轮会重复计数。
+class SampleTransaction {
+public:
+    explicit SampleTransaction(Db& db) : db_(db) {
+        db_.begin();
+        active_ = true;
+    }
+    ~SampleTransaction() {
+        if (!active_) {
+            return;
+        }
+        try {
+            db_.rollback();
+        } catch (const std::exception&) {
+        }
+    }
+    SampleTransaction(const SampleTransaction&) = delete;
+    SampleTransaction& operator=(const SampleTransaction&) = delete;
+
+    void commit() {
+        db_.commit();
+        active_ = false;
+    }
+
+private:
+    Db& db_;
+    bool active_{false};
+};
+
 // 读取 nft 审计集合，按会话归属写 vpn_access_log。
 // 调用方必须持有 g_policy_mutex；only_ip 非空时只处理该客户端（断开前最终采样）。
 void sample_flows_locked(Db& db,
@@ -759,6 +808,8 @@ void sample_flows_locked(Db& db,
         }
     }
 
+    SampleTransaction transaction(db);
+
     std::map<Key, std::pair<std::uint64_t, std::uint64_t>> previous;
     const auto rows = db.query(
         "SELECT session_id, dest_ip, action, bytes_up, bytes_down "
@@ -808,12 +859,18 @@ void sample_flows_locked(Db& db,
             upsert_access_log(db, current, std::get<1>(entry.first),
                               std::get<2>(entry.first), delta_up, delta_down);
         }
-        if (prior != previous.end() || up_raw != 0 || down_raw != 0) {
+        const bool state_changed =
+            prior == previous.end() || prev_up != up_raw ||
+            prev_down != down_raw;
+        if (state_changed &&
+            (prior != previous.end() || up_raw != 0 || down_raw != 0)) {
             upsert_flow_state(db, current.session_id,
                               std::get<1>(entry.first),
                               std::get<2>(entry.first), up_raw, down_raw);
         }
     }
+
+    transaction.commit();
 }
 
 void sample_flows(Db& db, NftManager& nft) {
@@ -821,15 +878,15 @@ void sample_flows(Db& db, NftManager& nft) {
     sample_flows_locked(db, nft, nullptr);
 }
 
-// 会话结束前：最终采样 -> 清理该 IP 的集合元素 -> 删除基线。
-void flush_session_flows(Db& db, NftManager& nft, const Session& session) {
+// 断开/reconcile 清理前，只做最终采样（失败要让调用方保留会话，稍后重试）。
+void sample_session_flows(Db& db, NftManager& nft, const Session& session) {
     const std::string ip = format_ipv4(session.virtual_ip);
-    try {
-        sample_flows_locked(db, nft, &ip);
-    } catch (const std::exception& error) {
-        log_warn("final flow sample failed for " + session.username + ": " +
-                 error.what());
-    }
+    sample_flows_locked(db, nft, &ip);
+}
+
+// 会话成功归档后，再清理集合元素与采样基线（best effort）。
+void clear_session_flows(Db& db, NftManager& nft, const Session& session) {
+    const std::string ip = format_ipv4(session.virtual_ip);
     try {
         std::string error;
         if (!nft.flush_flows(ip, &error)) {
@@ -852,8 +909,19 @@ bool cleanup_session(Db& db,
                      std::uint64_t bytes_out,
                      std::uint32_t session_time,
                      int terminate_cause) {
-    // 先做最终采样再删规则：否则最后一段流量会丢失。
-    flush_session_flows(db, nft, session);
+    // 顺序很重要：
+    //   1) 最终采样（失败则保留会话/计数器，稍后重试）
+    //   2) 删 nft 规则
+    //   3) 归档并删除在线会话
+    //   4) 归档成功后才清空 nft 元素与采样基线
+    // 这样 DB 短暂不可用时不会先把计数器清掉，导致重试丢数据。
+    try {
+        sample_session_flows(db, nft, session);
+    } catch (const std::exception& error) {
+        log_error("final flow sample failed for " + session.username + ": " +
+                  error.what() + "; keeping session for retry");
+        return false;
+    }
     std::string nft_error;
     if (!nft.remove_session(session.username, session.virtual_ip, &nft_error)) {
         log_error("nft cleanup failed for " + session.username + " ip=" +
@@ -861,17 +929,18 @@ bool cleanup_session(Db& db,
                   "; keeping session for retry");
         return false;
     }
-    send_stop(accounting, session, nas_ip, bytes_in, bytes_out, session_time,
-              terminate_cause);
     try {
         archive_session(db, session, bytes_in, bytes_out, session_time,
                         terminate_cause);
         delete_session(db, session.session_id);
     } catch (const std::exception& error) {
         log_error("failed to archive session " + session.session_id + ": " +
-                  error.what());
+                  error.what() + "; keeping flow counters for retry");
         return false;
     }
+    send_stop(accounting, session, nas_ip, bytes_in, bytes_out, session_time,
+              terminate_cause);
+    clear_session_flows(db, nft, session);
     return true;
 }
 
@@ -1746,12 +1815,34 @@ void reconcile(Db& db,
                  std::to_string(removed_elements) + " chains=" +
                  std::to_string(removed_chains));
     }
+
+    // 审计集合的兜底清理：会话异常消失（崩溃、漏 disconnect）时，
+    // 不属于任何在线客户端的元素会一直占着 24h 的 allow/rev 集合。
+    std::size_t removed_flow_elements = 0;
+    if (!nft.cleanup_flow_elements(keep_ips, &removed_flow_elements,
+                                   &nft_error)) {
+        log_warn("reconcile flow element cleanup failed: " + nft_error);
+    } else if (removed_flow_elements != 0) {
+        log_info("reconcile flow element cleanup elements=" +
+                 std::to_string(removed_flow_elements));
+    }
+
+    // 清理已不存在会话的采样基线（例如手工删除了 vpn_sessions 行）。
+    try {
+        db.execute("DELETE FROM vpn_flow_state WHERE session_id NOT IN "
+                   "(SELECT session_id FROM vpn_sessions)");
+    } catch (const std::exception& error) {
+        log_warn("reconcile flow state cleanup failed: " +
+                 std::string(error.what()));
+    }
 }
 
 void interim_update(Db& db,
                     AccountingWorker* accounting,
                     const PolicydConfig& config) {
-    if (config.dry_run || !accounting) {
+    // 会话统计与 accounting 无关：即使不启用 RADIUS，也要持续更新
+    // vpn_sessions 的 bytes_in/out / last_seen（reconcile 归档会用到）。
+    if (config.dry_run) {
         return;
     }
     if (!status_snapshot_fresh(config)) {
@@ -1929,6 +2020,15 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        try {
+            schema_is_current(db);
+        } catch (const std::exception& exception) {
+            log_error(std::string("database schema is outdated (run "
+                                  "deploy/migrate.sh): ") +
+                      exception.what());
+            return 1;
+        }
+
         std::unique_ptr<AccountingWorker> accounting;
         if (config.accounting_enabled && !config.dry_run) {
             try {
@@ -1945,6 +2045,7 @@ int main(int argc, char** argv) {
                        config.work_dir, config.dry_run);
         std::string error;
         bool flow_sets_present = false;
+        bool rebuilt = false;
         nft.has_flow_sets(&flow_sets_present);
         if (!flow_sets_present) {
             // 升级路径：旧表没有审计集合，原子重建并在同一脚本里恢复在线会话。
@@ -1975,6 +2076,8 @@ int main(int argc, char** argv) {
             }
             if (!nft.rebuild(updates, &error)) {
                 log_error("failed to rebuild nftables: " + error);
+            } else {
+                rebuilt = true;
             }
         } else if (!nft.ensure_base(&error)) {
             log_error("failed to initialize nftables: " + error +
@@ -1995,6 +2098,17 @@ int main(int argc, char** argv) {
         } catch (const std::exception& exception) {
             log_warn(std::string("stale flow state cleanup failed: ") +
                      exception.what());
+        }
+
+        // 重建表会把内核计数器清零，旧基线已无意义。
+        if (rebuilt) {
+            try {
+                db.execute("DELETE FROM vpn_flow_state");
+                log_info("nftables rebuilt; flow counters baseline reset");
+            } catch (const std::exception& exception) {
+                log_warn(std::string("failed to reset flow baselines: ") +
+                         exception.what());
+            }
         }
 
         const int server_fd = create_server_socket(config.socket_path, 0660);

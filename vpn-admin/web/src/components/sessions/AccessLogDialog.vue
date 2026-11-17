@@ -9,7 +9,6 @@ import { formatBytes } from '../../utils/format'
 const props = defineProps<{
   modelValue: boolean
   sessionId?: string
-  username?: string
 }>()
 const emit = defineEmits<{ 'update:modelValue': [boolean] }>()
 
@@ -22,32 +21,21 @@ function close() {
 }
 
 async function load() {
+  if (!props.sessionId) {
+    items.value = []
+    stats.value = null
+    return
+  }
   loading.value = true
   try {
-    if (props.sessionId) {
-      const response = await api.get<{
-        items: AccessLogRow[]
-        stats: AccessLogStats
-      }>(`/sessions/${encodeURIComponent(props.sessionId)}/access`, {
-        params: { page_size: 200 },
-      })
-      items.value = response.data.items
-      stats.value = response.data.stats
-    } else {
-      // 老历史会话没有 session_id：退化为按用户名查询。
-      const response = await api.get<{
-        items: AccessLogRow[]
-        stats: AccessLogStats
-      }>('/access', {
-        params: {
-          username: props.username ?? '',
-          range: 'all',
-          page_size: 200,
-        },
-      })
-      items.value = response.data.items
-      stats.value = response.data.stats
-    }
+    const response = await api.get<{
+      items: AccessLogRow[]
+      stats: AccessLogStats
+    }>(`/sessions/${encodeURIComponent(props.sessionId)}/access`, {
+      params: { page_size: 200 },
+    })
+    items.value = response.data.items
+    stats.value = response.data.stats
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {

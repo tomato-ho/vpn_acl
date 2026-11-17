@@ -10,8 +10,11 @@
 namespace vpn {
 namespace {
 
-// 审计集合的过期时间：比采样间隔长得多，避免活跃流被误判为过期。
-constexpr const char* kFlowSetTimeout = "10m";
+// 允许/反向集合的超时设得很长：policyd 会在连接/断开时主动清理元素，
+// 长超时避免"空闲一段时间后计数器归零"导致少计。deny 集合保持短超时，
+// 防止扫描流量长期占用容量。
+constexpr const char* kFlowSetTimeout = "24h";
+constexpr const char* kFlowDenyTimeout = "10m";
 constexpr const char* kFlowSetSize = "65536";
 
 bool is_flow_set(const std::string& name) {
@@ -149,35 +152,42 @@ std::string nft_base_script(const std::string& table,
     // 访问审计集合：键统一为「客户端隧道 IP . 目标 IP」，per-element counter。
     const char* flow_sets[] = {kFlowSetAllowUp, kFlowSetAllowDown, kFlowSetDeny};
     for (const char* name : flow_sets) {
+        const char* timeout = name == kFlowSetDeny ? kFlowDenyTimeout
+                                                   : kFlowSetTimeout;
         out << "add set inet " << table << ' ' << name
             << " { type ipv4_addr . ipv4_addr; flags dynamic,timeout; timeout "
-            << kFlowSetTimeout << "; size " << kFlowSetSize
-            << "; counter; }\n";
+            << timeout << "; size " << kFlowSetSize << "; counter; }\n";
     }
 
     out << "add chain inet " << table
         << " forward { type filter hook forward priority filter - 10; policy accept; }\n";
-    // 下行（目标 -> 客户端）必须在通用 established 放行之前计数。
+    // 客户端隔离优先；同时把尝试访问其他客户端的目标记为 deny。
+    out << "add rule inet " << table << " forward iifname \"" << tun_iface
+        << "\" oifname \"" << tun_iface << "\" update @" << kFlowSetDeny
+        << " { ip saddr . ip daddr } drop\n";
+    // 下行（目标 -> 客户端）计数。放在策略链之前，保证回包都被统计。
     out << "add rule inet " << table << " forward oifname \"" << tun_iface
         << "\" ct state established,related update @" << kFlowSetAllowDown
         << " { ip daddr . ip saddr } accept\n";
-    out << "add rule inet " << table
-        << " forward ct state established,related accept\n";
-    out << "add rule inet " << table << " forward iifname \"" << tun_iface
-        << "\" oifname \"" << tun_iface << "\" drop\n";
+    // tun0 的每个包都重新匹配当前策略：
+    // 1) 允许流量在上行方向逐包计数（established 包不能绕过）；
+    // 2) 收回权限后，已建立的连接也会立即被 deny。
     out << "add rule inet " << table << " forward iifname \"" << tun_iface
         << "\" ip saddr vmap @user_fwd\n";
     out << "add rule inet " << table << " forward iifname \"" << tun_iface
         << "\" counter drop\n";
+    // 只影响非 tun0 的转发流量（例如 LAN 方向的 established 回包）。
+    out << "add rule inet " << table
+        << " forward ct state established,related accept\n";
 
     out << "add chain inet " << table
         << " input { type filter hook input priority filter - 10; policy accept; }\n";
-    out << "add rule inet " << table
-        << " input ct state established,related accept\n";
     out << "add rule inet " << table << " input iifname \"" << tun_iface
         << "\" ip saddr vmap @user_in\n";
     out << "add rule inet " << table << " input iifname \"" << tun_iface
         << "\" counter drop\n";
+    out << "add rule inet " << table
+        << " input ct state established,related accept\n";
     return out.str();
 }
 

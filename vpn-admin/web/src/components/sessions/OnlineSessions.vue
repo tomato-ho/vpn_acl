@@ -22,7 +22,6 @@ const loading = ref(false)
 const updatedAt = ref('')
 const accessOpen = ref(false)
 const accessSessionId = ref('')
-const accessUsername = ref('')
 let timer: number | undefined
 
 function formatBytes(value: number): string {
@@ -82,7 +81,6 @@ async function kick(row: unknown) {
 function showAccess(row: unknown) {
   const session = row as SessionRow
   accessSessionId.value = session.session_id
-  accessUsername.value = session.username
   accessOpen.value = true
 }
 
@@ -141,7 +139,6 @@ onBeforeUnmount(() => {
     <AccessLogDialog
       v-model="accessOpen"
       :session-id="accessSessionId"
-      :username="accessUsername"
     />
   </div>
 </template>

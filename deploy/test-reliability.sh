@@ -279,7 +279,10 @@ sql -e "DELETE FROM vpn_sessions WHERE username='$D_USER'" >/dev/null
 [[ -z "$(session_id_of "$D_USER")" ]] || fail "D: 删除会话行失败"
 
 log "等待 reconcile 补建..."
-sleep 35
+for _ in $(seq 1 60); do
+    [[ -n "$(session_id_of "$D_USER")" ]] && break
+    sleep 1
+done
 [[ -n "$(session_id_of "$D_USER")" ]] || fail "D: reconcile 未补建会话"
 nft_chain_exists "$D_USER" "$D_IP" || fail "D: reconcile 未恢复 nft 链"
 ok "D: 会话已补建且 nft 已恢复"

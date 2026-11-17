@@ -25,12 +25,21 @@ void check_contains(const std::string& text,
 
 void test_base_script() {
     const std::string script = vpn::nft_base_script("vpn_acl", "tun0");
-    check_contains(script, "add set inet vpn_acl flows {",
-                   "base has allow-up set");
-    check_contains(script, "add set inet vpn_acl flows_rev {",
-                   "base has allow-down set");
-    check_contains(script, "add set inet vpn_acl flows_deny {",
-                   "base has deny set");
+    check_contains(script,
+                   "add set inet vpn_acl flows { type ipv4_addr . "
+                   "ipv4_addr; flags dynamic,timeout; timeout 24h; size 65536; "
+                   "counter; }",
+                   "allow-up set uses a long timeout");
+    check_contains(script,
+                   "add set inet vpn_acl flows_rev { type ipv4_addr . "
+                   "ipv4_addr; flags dynamic,timeout; timeout 24h; size 65536; "
+                   "counter; }",
+                   "allow-down set uses a long timeout");
+    check_contains(script,
+                   "add set inet vpn_acl flows_deny { type ipv4_addr . "
+                   "ipv4_addr; flags dynamic,timeout; timeout 10m; size 65536; "
+                   "counter; }",
+                   "deny set keeps a short timeout");
     check_contains(script, "type ipv4_addr . ipv4_addr",
                    "flows sets use address pairs");
     check_contains(script, "counter", "flows sets have per-element counters");
@@ -38,12 +47,44 @@ void test_base_script() {
                    "oifname \"tun0\" ct state established,related update "
                    "@flows_rev { ip daddr . ip saddr } accept",
                    "reverse accounting rule");
+    check_contains(script,
+                   "iifname \"tun0\" oifname \"tun0\" update @flows_deny "
+                   "{ ip saddr . ip daddr } drop",
+                   "client isolation is audited as deny");
 
-    const auto reverse = script.find("update @flows_rev");
-    const auto established = script.find("forward ct state established,related accept");
-    check(reverse != std::string::npos && established != std::string::npos &&
-              reverse < established,
-          "reverse accounting runs before the generic established accept");
+    const auto isolation =
+        script.find("iifname \"tun0\" oifname \"tun0\" update @flows_deny");
+    const auto reverse = script.find("forward oifname \"tun0\" ct state");
+    const auto forward_map =
+        script.find("forward iifname \"tun0\" ip saddr vmap @user_fwd");
+    const auto forward_drop =
+        script.find("forward iifname \"tun0\" counter drop");
+    const auto forward_established =
+        script.find("forward ct state established,related accept");
+    const auto input_map =
+        script.find("input iifname \"tun0\" ip saddr vmap @user_in");
+    const auto input_drop =
+        script.find("input iifname \"tun0\" counter drop");
+    const auto input_established =
+        script.find("input ct state established,related accept");
+
+    check(isolation != std::string::npos && reverse != std::string::npos &&
+              isolation < reverse,
+          "client isolation runs before reverse accounting");
+    check(reverse != std::string::npos && forward_map != std::string::npos &&
+              reverse < forward_map,
+          "reverse accounting runs before the policy map");
+    check(forward_map != std::string::npos &&
+              forward_drop != std::string::npos &&
+              forward_established != std::string::npos &&
+              forward_map < forward_drop &&
+              forward_drop < forward_established,
+          "tun0 packets are policy-checked before the generic established "
+          "accept");
+    check(input_map != std::string::npos && input_drop != std::string::npos &&
+              input_established != std::string::npos &&
+              input_map < input_drop && input_drop < input_established,
+          "input tun0 packets are policy-checked before established accept");
 }
 
 void test_rule_scripts() {

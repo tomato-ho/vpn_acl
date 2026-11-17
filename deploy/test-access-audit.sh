@@ -5,10 +5,12 @@
 #   sudo ./deploy/test-access-audit.sh
 #
 # 覆盖：
-#   A. 允许访问：目标 IP、上行/下行字节被记录
+#   A. 允许访问：ICMP 上行/下行逐包计数（不再只记第一个包）
 #   B. 拒绝访问：被策略 drop 的目标也会记录
 #   C. policyd 重启：采样基线不丢，字节继续累加
-#   D. 断开：最终采样落库，nft 集合与采样基线被清理
+#   D. TCP 传输：长连接的上行 ACK 也被完整计数
+#   E. 策略撤回：已建立的连接立即被 deny（并产生审计）
+#   F. 断开：最终采样落库，nft 集合与采样基线被清理
 #
 set -euo pipefail
 
@@ -28,7 +30,7 @@ ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [[ -f /etc/vpn-policy/config/vpn-policy.conf ]] || fail "缺少 /etc/vpn-policy/config"
 [[ -f /etc/vpn-policy/client.ovpn ]] || fail "缺少 /etc/vpn-policy/client.ovpn"
 [[ -f .env ]] || fail "缺少 .env"
-for tool in ip ping nft; do
+for tool in ip ping nft curl python3; do
     command -v "$tool" >/dev/null 2>&1 || fail "缺少命令：$tool"
 done
 
@@ -59,7 +61,10 @@ CLIENT_VETH=vc-out
 TARGET_VETH=vt-out
 CRED_FILE=/tmp/vpn-flow.cred
 CLIENT_LOG=/tmp/vpn-flow-client.log
+HTTP_DIR=/tmp/vpn-flow-http
+HTTP_PID=""
 CLIENT_PID=""
+CURL_PID=""
 FIREWALLD_ACTIVE=0
 TUN0_WAS_TRUSTED=0
 
@@ -71,11 +76,20 @@ grep -qx vpn-policyd <<< "$running_names" || fail "vpn-policyd 未运行"
 grep -qx vpn-mariadb <<< "$running_names" || fail "vpn-mariadb 未运行"
 
 cleanup() {
+    if [[ -n "$CURL_PID" ]]; then
+        kill "$CURL_PID" 2>/dev/null || true
+        wait "$CURL_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$HTTP_PID" ]]; then
+        kill "$HTTP_PID" 2>/dev/null || true
+        wait "$HTTP_PID" 2>/dev/null || true
+    fi
     if [[ -n "$CLIENT_PID" ]]; then
         kill "$CLIENT_PID" 2>/dev/null || true
         wait "$CLIENT_PID" 2>/dev/null || true
     fi
     pkill -f "[o]penvpn.*$CLIENT_NS" 2>/dev/null || true
+    rm -rf "$HTTP_DIR"
     if [[ $FIREWALLD_ACTIVE -eq 1 ]]; then
         firewall-cmd --zone=trusted --remove-interface="$TARGET_VETH" \
             >/dev/null 2>&1 || true
@@ -205,52 +219,52 @@ nft_set_contains() {
     nft list set inet vpn_acl "$1" 2>/dev/null | grep -q "$VIRTUAL_IP"
 }
 
-wait_for_log() {
-    local dest=$1 action=$2 field=$3 value
-    for _ in $(seq 1 40); do
-        value=$(sqlq "SELECT $field FROM vpn_access_log
-                       WHERE session_id='$SESSION_ID'
-                         AND dest_ip='$dest' AND action='$action'")
-        if [[ -n "$value" && "$value" != "0" ]]; then
+access_value() {
+    local dest=$1 action=$2 field=$3
+    sqlq "SELECT $field FROM vpn_access_log
+          WHERE session_id='$SESSION_ID'
+            AND dest_ip='$dest' AND action='$action'"
+}
+
+wait_for_min() {
+    local dest=$1 action=$2 field=$3 minimum=$4 value=""
+    for _ in $(seq 1 45); do
+        value=$(access_value "$dest" "$action" "$field")
+        if [[ -n "$value" && "$value" -ge "$minimum" ]]; then
             printf '%s' "$value"
             return 0
         fi
         sleep 2
     done
+    printf '%s' "${value:-0}"
     return 1
 }
 
 # ---------------------------------------------------------------- A. allow
-log "A. 向允许目标发流量（$ALLOW_TARGET）"
+log "A. 向允许目标发 5 个 ping（每个请求都应计入上行）"
 ip netns exec "$CLIENT_NS" ping -c 5 -i 0.2 "$ALLOW_TARGET" >/dev/null ||
     fail "ping 允许目标失败"
-UP=$(wait_for_log "$ALLOW_TARGET" allow bytes_up) ||
-    fail "没有记录到允许目标的流量"
-DOWN=$(sqlq "SELECT bytes_down FROM vpn_access_log
-              WHERE session_id='$SESSION_ID'
-                AND dest_ip='$ALLOW_TARGET' AND action='allow'")
-[[ "$DOWN" -gt 0 ]] || fail "允许目标没有下行字节（bytes_down=$DOWN）"
-[[ "$UP" -gt 0 ]] || fail "允许目标没有上行字节"
+# 默认 ping：56 字节负载 + 8 字节 ICMP + 20 字节 IP = 84 字节
+UP=$(wait_for_min "$ALLOW_TARGET" allow bytes_up 420) ||
+    fail "5 个 ping 的上行字节没有完整记录（当前 $UP，预期 >=420）"
+DOWN=$(wait_for_min "$ALLOW_TARGET" allow bytes_down 420) ||
+    fail "5 个 ping 的下行字节没有完整记录（当前 $DOWN，预期 >=420）"
 ok "A: allow 记录 dest=$ALLOW_TARGET up=$UP down=$DOWN"
 
-# 上行来自 flows，下行来自 flows_rev，必须都能在 nft 里看到元素。
 nft_set_contains flows || fail "flows 集合没有该客户端元素"
 nft_set_contains flows_rev || fail "flows_rev 集合没有该客户端元素"
 
 # ---------------------------------------------------------------- B. deny
 log "B. 向未授权目标发流量（$DENY_TARGET）"
 ip netns exec "$CLIENT_NS" ping -c 3 -i 0.2 "$DENY_TARGET" >/dev/null 2>&1 || true
-DENY_UP=$(wait_for_log "$DENY_TARGET" deny bytes_up) ||
+DENY_UP=$(wait_for_min "$DENY_TARGET" deny bytes_up 1) ||
     fail "没有记录到被拒绝的目标"
-[[ "$DENY_UP" -gt 0 ]] || fail "deny 记录字节为 0"
 nft_set_contains flows_deny || fail "flows_deny 集合没有该客户端元素"
 ok "B: deny 记录 dest=$DENY_TARGET up=$DENY_UP"
 
 # ---------------------------------------------------------------- C. 重启
 log "C. 重启 policyd，采样基线不应丢失"
-BEFORE=$(sqlq "SELECT bytes_up FROM vpn_access_log
-                WHERE session_id='$SESSION_ID'
-                  AND dest_ip='$ALLOW_TARGET' AND action='allow'")
+BEFORE=$(access_value "$ALLOW_TARGET" allow bytes_up)
 podman restart vpn-policyd >/dev/null
 for _ in $(seq 1 30); do
     if curl --noproxy '*' -fsS --max-time 2 \
@@ -262,25 +276,77 @@ done
 sleep 3
 ip netns exec "$CLIENT_NS" ping -c 5 -i 0.2 "$ALLOW_TARGET" >/dev/null ||
     fail "重启后 ping 允许目标失败"
-
-AFTER=$BEFORE
-for _ in $(seq 1 40); do
-    AFTER=$(sqlq "SELECT bytes_up FROM vpn_access_log
-                   WHERE session_id='$SESSION_ID'
-                     AND dest_ip='$ALLOW_TARGET' AND action='allow'")
-    if [[ -n "$AFTER" && "$AFTER" -gt "$BEFORE" ]]; then
-        break
-    fi
-    sleep 2
-done
-[[ -n "$AFTER" && "$AFTER" -gt "$BEFORE" ]] ||
-    fail "policyd 重启后字节没有继续累加（$BEFORE -> $AFTER）"
+EXPECTED=$((BEFORE + 420))
+AFTER=$(wait_for_min "$ALLOW_TARGET" allow bytes_up "$EXPECTED") ||
+    fail "policyd 重启后字节没有完整累加（$BEFORE -> ${AFTER:-0}，预期 >$BEFORE）"
 [[ "$(sqlq "SELECT COUNT(*) FROM vpn_sessions WHERE username='$USER_NAME'")" == "1" ]] ||
     fail "重启后会话丢失"
 ok "C: 重启后继续累加（$BEFORE -> $AFTER）"
 
-# ---------------------------------------------------------------- D. 断开
-log "D. 断开客户端，应做最终采样并清理集合"
+# ---------------------------------------------------------------- D. TCP
+log "D. TCP 下载 2MiB：长连接的上行 ACK 也应被计数"
+rm -rf "$HTTP_DIR"
+mkdir -p "$HTTP_DIR"
+dd if=/dev/zero of="$HTTP_DIR/test.bin" bs=1M count=2 status=none
+# 不用 `python3 -m http.server`：它在 bind 时会做反向 DNS，
+# 内网/无 DNS 环境会卡在 listen 之前。这里跳过 getfqdn。
+ip netns exec "$TARGET_NS" python3 -c '
+import functools, http.server, socketserver, sys
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[2])
+with Server((sys.argv[1], 8080), handler) as httpd:
+    httpd.serve_forever()
+' "$ALLOW_TARGET" "$HTTP_DIR" >/dev/null 2>&1 &
+HTTP_PID=$!
+HTTP_READY=0
+for _ in $(seq 1 20); do
+    if ip netns exec "$TARGET_NS" curl --noproxy '*' -s -o /dev/null \
+        --max-time 1 "http://$ALLOW_TARGET:8080/"; then
+        HTTP_READY=1
+        break
+    fi
+    sleep 1
+done
+[[ $HTTP_READY -eq 1 ]] || fail "HTTP 测试服务未启动"
+ip netns exec "$CLIENT_NS" curl --noproxy '*' -fsS --max-time 60 \
+    -o /dev/null "http://$ALLOW_TARGET:8080/test.bin" ||
+    fail "TCP 下载失败"
+DOWN=$(wait_for_min "$ALLOW_TARGET" allow bytes_down 2000000) ||
+    fail "TCP 下行字节没有完整记录（当前 $DOWN，预期 >=2000000）"
+UP=$(wait_for_min "$ALLOW_TARGET" allow bytes_up 20000) ||
+    fail "TCP 上行 ACK 没有被计数（当前 $UP，预期 >=20000）"
+ok "D: TCP 记录 up=$UP down=$DOWN"
+
+# ---------------------------------------------------------------- E. 撤回
+log "E. 传输中撤回权限，已建立连接应立即被 deny"
+ip netns exec "$CLIENT_NS" curl --noproxy '*' -s --limit-rate 100k \
+    --max-time 60 -o /dev/null "http://$ALLOW_TARGET:8080/test.bin" &
+CURL_PID=$!
+sleep 2
+$POLICYCTL --config "$CONFIG" user-rule-add "$USER_NAME" deny 10.99.0.0/24 \
+    >/dev/null
+REVOKE_DENY=$(wait_for_min "$ALLOW_TARGET" deny bytes_up 1) ||
+    fail "撤回权限后没有产生 deny 记录（已建立连接可能仍在放行）"
+ok "E: 撤回后 deny 记录 dest=$ALLOW_TARGET up=$REVOKE_DENY"
+kill "$CURL_PID" 2>/dev/null || true
+wait "$CURL_PID" 2>/dev/null || true
+CURL_PID=""
+
+# 恢复权限，供后续断开用例使用。
+sql -e "DELETE FROM vpn_user_rules
+         WHERE username='$USER_NAME' AND rule_type='deny'
+           AND cidr='10.99.0.0/24';
+        UPDATE vpn_policy_version SET version=version+1, updated_at=NOW()
+         WHERE id=1;" >/dev/null
+sleep 8
+
+# ---------------------------------------------------------------- F. 断开
+log "F. 断开客户端，应做最终采样并清理集合"
 ip netns exec "$CLIENT_NS" ping -c 3 -i 0.2 "$ALLOW_TARGET" >/dev/null || true
 kill "$CLIENT_PID" 2>/dev/null || true
 wait "$CLIENT_PID" 2>/dev/null || true
@@ -294,9 +360,7 @@ done
 [[ -z "$(sqlq "SELECT session_id FROM vpn_sessions WHERE username='$USER_NAME'")" ]] ||
     fail "会话未正常归档"
 
-FINAL=$(sqlq "SELECT bytes_up FROM vpn_access_log
-               WHERE session_id='$SESSION_ID'
-                 AND dest_ip='$ALLOW_TARGET' AND action='allow'")
+FINAL=$(access_value "$ALLOW_TARGET" allow bytes_up)
 [[ -n "$FINAL" && "$FINAL" -ge "$AFTER" ]] ||
     fail "断开时最终采样丢失（$AFTER -> $FINAL）"
 [[ "$(sqlq "SELECT COUNT(*) FROM vpn_flow_state WHERE session_id='$SESSION_ID'")" == "0" ]] ||
@@ -304,8 +368,8 @@ FINAL=$(sqlq "SELECT bytes_up FROM vpn_access_log
 if nft_set_contains flows || nft_set_contains flows_rev || nft_set_contains flows_deny; then
     fail "断开后 nft 集合仍残留该客户端元素"
 fi
-[[ "$(sqlq "SELECT COUNT(*) FROM vpn_access_log WHERE session_id='$SESSION_ID'")" -ge 2 ]] ||
+[[ "$(sqlq "SELECT COUNT(*) FROM vpn_access_log WHERE session_id='$SESSION_ID'")" -ge 3 ]] ||
     fail "审计记录不应随会话删除"
-ok "D: 最终采样保留（up=$FINAL），集合与基线已清理"
+ok "F: 最终采样保留（up=$FINAL），集合与基线已清理"
 
 log "全部访问审计用例通过"
