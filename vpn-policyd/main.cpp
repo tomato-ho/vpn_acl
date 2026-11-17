@@ -46,6 +46,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -96,6 +97,7 @@ struct PolicydConfig {
     int reconcile_grace{120};
     int recover_grace{15};
     int policy_check_interval{5};
+    int flow_sample_interval{30};
     uid_t allowed_uid{0};
     std::string log_file{"/var/log/vpn-policyd/vpn-policyd.log"};
     std::string log_level{"info"};
@@ -248,6 +250,12 @@ PolicydConfig load_config(const std::string& path) {
         1, static_cast<int>(parse_u32_or_throw(
                config.get("recover_grace", "15"), "recover_grace")),
         3600);
+    // 采样间隔必须明显小于 nft 集合的 timeout（10m），否则活跃流会先过期。
+    out.flow_sample_interval = std::clamp(
+        5, static_cast<int>(parse_u32_or_throw(
+               config.get("flow_sample_interval", "30"),
+               "flow_sample_interval")),
+        300);
     out.allowed_uid = static_cast<uid_t>(
         parse_u32_or_throw(config.get("allowed_uid", "0"), "allowed_uid"));
     out.log_file = config.get("log_file", out.log_file);
@@ -562,18 +570,20 @@ void archive_session(Db& db,
                      int terminate_cause) {
     db.execute(
         "INSERT INTO vpn_session_history "
-        "(username, virtual_ip, remote_ip, acct_session_id, start_time, "
+        "(username, session_id, virtual_ip, remote_ip, acct_session_id, "
+        "start_time, "
         "stop_time, duration_seconds, bytes_in, bytes_out, terminate_cause) "
         "VALUES ('" +
-        db.quote(session.username) + "', '" +
-        format_ipv4(session.virtual_ip) + "', '" +
+        db.quote(session.username) + "', '" + db.quote(session.session_id) +
+        "', '" + format_ipv4(session.virtual_ip) + "', '" +
         db.quote(session.remote_ip) + "', '" +
         db.quote(session.acct_session_id) + "', FROM_UNIXTIME(" +
         std::to_string(session.start_time) + "), NOW(), " +
         std::to_string(session_time) + ", " + std::to_string(bytes_in) + ", " +
         std::to_string(bytes_out) + ", '" +
         db.quote(terminate_cause_name(terminate_cause)) + "') "
-        "ON DUPLICATE KEY UPDATE stop_time = VALUES(stop_time), "
+        "ON DUPLICATE KEY UPDATE session_id = VALUES(session_id), "
+        "stop_time = VALUES(stop_time), "
         "duration_seconds = VALUES(duration_seconds), "
         "bytes_in = VALUES(bytes_in), bytes_out = VALUES(bytes_out), "
         "terminate_cause = VALUES(terminate_cause)");
@@ -644,6 +654,195 @@ void send_interim(AccountingWorker* accounting,
     }
 }
 
+std::uint64_t parse_u64_text(const std::string& value) {
+    try {
+        return static_cast<std::uint64_t>(std::stoull(value));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+// 把本轮相对上一轮 nft 计数器的增量累加到审计表。
+void upsert_access_log(Db& db,
+                       const Session& session,
+                       const std::string& dest_ip,
+                       const std::string& action,
+                       std::uint64_t bytes_up,
+                       std::uint64_t bytes_down) {
+    db.execute(
+        "INSERT INTO vpn_access_log "
+        "(session_id, username, virtual_ip, dest_ip, action, bytes_up, "
+        "bytes_down, first_seen, last_seen) VALUES ('" +
+        db.quote(session.session_id) + "', '" + db.quote(session.username) +
+        "', '" + format_ipv4(session.virtual_ip) + "', '" +
+        db.quote(dest_ip) + "', '" + action + "', " +
+        std::to_string(bytes_up) + ", " + std::to_string(bytes_down) +
+        ", NOW(), NOW()) ON DUPLICATE KEY UPDATE "
+        "bytes_up = bytes_up + VALUES(bytes_up), "
+        "bytes_down = bytes_down + VALUES(bytes_down), last_seen = NOW()");
+}
+
+// 保存本轮读到的原始计数器，policyd 重启后继续做差。
+void upsert_flow_state(Db& db,
+                       const std::string& session_id,
+                       const std::string& dest_ip,
+                       const std::string& action,
+                       std::uint64_t bytes_up,
+                       std::uint64_t bytes_down) {
+    db.execute(
+        "INSERT INTO vpn_flow_state "
+        "(session_id, dest_ip, action, bytes_up, bytes_down) VALUES ('" +
+        db.quote(session_id) + "', '" + db.quote(dest_ip) + "', '" +
+        action + "', " + std::to_string(bytes_up) + ", " +
+        std::to_string(bytes_down) + ") ON DUPLICATE KEY UPDATE "
+        "bytes_up = VALUES(bytes_up), bytes_down = VALUES(bytes_down)");
+}
+
+void delete_flow_state(Db& db, const std::string& session_id) {
+    db.execute("DELETE FROM vpn_flow_state WHERE session_id = '" +
+               db.quote(session_id) + "'");
+}
+
+// 读取 nft 审计集合，按会话归属写 vpn_access_log。
+// 调用方必须持有 g_policy_mutex；only_ip 非空时只处理该客户端（断开前最终采样）。
+void sample_flows_locked(Db& db,
+                         NftManager& nft,
+                         const std::string* only_ip) {
+    std::vector<FlowCounter> counters;
+    std::string error;
+    if (!nft.read_flow_counters(&counters, &error)) {
+        log_warn("flow sample skipped: " + error);
+        return;
+    }
+
+    std::map<std::string, Session> by_ip;
+    for (const auto& session : list_sessions(db)) {
+        const std::string ip = format_ipv4(session.virtual_ip);
+        if (only_ip && ip != *only_ip) {
+            continue;
+        }
+        by_ip[ip] = session;
+    }
+    if (by_ip.empty()) {
+        return;
+    }
+
+    struct RawFlow {
+        std::uint64_t up{0};
+        std::uint64_t down{0};
+        bool has_up{false};
+        bool has_down{false};
+    };
+    using Key = std::tuple<std::string, std::string, std::string>;
+    std::map<std::string, const Session*> by_id;
+    for (const auto& entry : by_ip) {
+        by_id[entry.second.session_id] = &entry.second;
+    }
+
+    std::map<Key, RawFlow> raw;
+    for (const auto& counter : counters) {
+        const auto session = by_ip.find(counter.src_ip);
+        if (session == by_ip.end()) {
+            continue;
+        }
+        const std::string action =
+            counter.set_name == kFlowSetDeny ? "deny" : "allow";
+        auto& flow =
+            raw[std::make_tuple(session->second.session_id, counter.dest_ip,
+                                action)];
+        if (counter.set_name == kFlowSetAllowDown) {
+            flow.down = counter.bytes;
+            flow.has_down = true;
+        } else {
+            flow.up = counter.bytes;
+            flow.has_up = true;
+        }
+    }
+
+    std::map<Key, std::pair<std::uint64_t, std::uint64_t>> previous;
+    const auto rows = db.query(
+        "SELECT session_id, dest_ip, action, bytes_up, bytes_down "
+        "FROM vpn_flow_state");
+    for (const auto& row : rows) {
+        if (row.size() < 5 || by_id.find(row[0]) == by_id.end()) {
+            continue;
+        }
+        previous[std::make_tuple(row[0], row[1], row[2])] = {
+            parse_u64_text(row[3]), parse_u64_text(row[4])};
+    }
+
+    // 元素从集合里消失（idle 超时）说明计数器已归零：
+    // 删除基线，下次出现时从 0 重新累计，避免负差值。
+    for (const auto& entry : previous) {
+        if (raw.find(entry.first) != raw.end()) {
+            continue;
+        }
+        db.execute(
+            "DELETE FROM vpn_flow_state WHERE session_id = '" +
+            db.quote(std::get<0>(entry.first)) + "' AND dest_ip = '" +
+            db.quote(std::get<1>(entry.first)) + "' AND action = '" +
+            std::get<2>(entry.first) + "'");
+    }
+
+    for (const auto& entry : raw) {
+        const auto session = by_id.find(std::get<0>(entry.first));
+        if (session == by_id.end()) {
+            continue;
+        }
+        const auto prior = previous.find(entry.first);
+        const std::uint64_t prev_up =
+            prior == previous.end() ? 0 : prior->second.first;
+        const std::uint64_t prev_down =
+            prior == previous.end() ? 0 : prior->second.second;
+        const std::uint64_t up_raw = entry.second.has_up ? entry.second.up : 0;
+        const std::uint64_t down_raw =
+            entry.second.has_down ? entry.second.down : 0;
+        // 差值回退说明计数器被重建，直接把当前值当作增量。
+        const std::uint64_t delta_up =
+            up_raw >= prev_up ? up_raw - prev_up : up_raw;
+        const std::uint64_t delta_down =
+            down_raw >= prev_down ? down_raw - prev_down : down_raw;
+
+        const Session& current = *session->second;
+        if (delta_up != 0 || delta_down != 0) {
+            upsert_access_log(db, current, std::get<1>(entry.first),
+                              std::get<2>(entry.first), delta_up, delta_down);
+        }
+        if (prior != previous.end() || up_raw != 0 || down_raw != 0) {
+            upsert_flow_state(db, current.session_id,
+                              std::get<1>(entry.first),
+                              std::get<2>(entry.first), up_raw, down_raw);
+        }
+    }
+}
+
+void sample_flows(Db& db, NftManager& nft) {
+    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
+    sample_flows_locked(db, nft, nullptr);
+}
+
+// 会话结束前：最终采样 -> 清理该 IP 的集合元素 -> 删除基线。
+void flush_session_flows(Db& db, NftManager& nft, const Session& session) {
+    const std::string ip = format_ipv4(session.virtual_ip);
+    try {
+        sample_flows_locked(db, nft, &ip);
+    } catch (const std::exception& error) {
+        log_warn("final flow sample failed for " + session.username + ": " +
+                 error.what());
+    }
+    try {
+        std::string error;
+        if (!nft.flush_flows(ip, &error)) {
+            log_warn("flow flush failed for " + session.username + ": " +
+                     error);
+        }
+        delete_flow_state(db, session.session_id);
+    } catch (const std::exception& error) {
+        log_warn("flow state cleanup failed for " + session.username + ": " +
+                 error.what());
+    }
+}
+
 bool cleanup_session(Db& db,
                      NftManager& nft,
                      AccountingWorker* accounting,
@@ -653,6 +852,8 @@ bool cleanup_session(Db& db,
                      std::uint64_t bytes_out,
                      std::uint32_t session_time,
                      int terminate_cause) {
+    // 先做最终采样再删规则：否则最后一段流量会丢失。
+    flush_session_flows(db, nft, session);
     std::string nft_error;
     if (!nft.remove_session(session.username, session.virtual_ip, &nft_error)) {
         log_error("nft cleanup failed for " + session.username + " ip=" +
@@ -873,6 +1074,20 @@ void handle_connect(const IpcFields& fields,
     session.remote_ip = remote_ip;
     session.acct_session_id = acct_session_id;
     session.start_time = start_time;
+
+    // 清掉该 IP 可能残留的审计元素与基线，避免新会话继承旧计数。
+    {
+        std::string flush_error;
+        if (!nft.flush_flows(format_ipv4(virtual_ip), &flush_error)) {
+            log_warn("pre-connect flow flush failed: " + flush_error);
+        }
+        try {
+            delete_flow_state(db, session_id);
+        } catch (const std::exception& error) {
+            log_warn("pre-connect flow state cleanup failed: " +
+                     std::string(error.what()));
+        }
+    }
 
     insert_session(db, session);
 
@@ -1729,7 +1944,39 @@ int main(int argc, char** argv) {
         NftManager nft(config.nft_bin, config.nft_table, config.tun_iface,
                        config.work_dir, config.dry_run);
         std::string error;
-        if (!nft.ensure_base(&error)) {
+        bool flow_sets_present = false;
+        nft.has_flow_sets(&flow_sets_present);
+        if (!flow_sets_present) {
+            // 升级路径：旧表没有审计集合，原子重建并在同一脚本里恢复在线会话。
+            log_info("nftables audit sets are missing; rebuilding table");
+            std::vector<NftSessionUpdate> updates;
+            try {
+                const auto validation = load_validation_config(db);
+                for (const auto& session : list_sessions(db)) {
+                    try {
+                        const auto data = load_policy(db, session.username);
+                        const auto policy =
+                            compute_effective_policy(data, validation);
+                        NftSessionUpdate update;
+                        update.username = session.username;
+                        update.virtual_ip = session.virtual_ip;
+                        update.allow = policy.push_routes;
+                        update.services = policy.services;
+                        updates.push_back(std::move(update));
+                    } catch (const std::exception& exception) {
+                        log_warn("rebuild skipped " + session.username +
+                                 ": " + exception.what());
+                    }
+                }
+            } catch (const std::exception& exception) {
+                log_error(std::string("failed to load sessions for "
+                                      "nftables rebuild: ") +
+                          exception.what());
+            }
+            if (!nft.rebuild(updates, &error)) {
+                log_error("failed to rebuild nftables: " + error);
+            }
+        } else if (!nft.ensure_base(&error)) {
             log_error("failed to initialize nftables: " + error +
                       "; will retry periodically");
         }
@@ -1739,6 +1986,15 @@ int main(int argc, char** argv) {
         } catch (const std::exception& exception) {
             log_error(std::string("session recovery failed: ") +
                       exception.what());
+        }
+
+        // 清理跟随已消失会话的采样基线（例如上次崩溃遗留）。
+        try {
+            db.execute("DELETE FROM vpn_flow_state WHERE session_id NOT IN "
+                       "(SELECT session_id FROM vpn_sessions)");
+        } catch (const std::exception& exception) {
+            log_warn(std::string("stale flow state cleanup failed: ") +
+                     exception.what());
         }
 
         const int server_fd = create_server_socket(config.socket_path, 0660);
@@ -1756,6 +2012,9 @@ int main(int argc, char** argv) {
                 auto next_interim =
                     std::chrono::steady_clock::now() +
                     std::chrono::seconds(config.interim_interval);
+                auto next_flow =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::seconds(config.flow_sample_interval);
                 while (running) {
                     const auto now = std::chrono::steady_clock::now();
                     if (now >= next_reconcile) {
@@ -1791,6 +2050,17 @@ int main(int argc, char** argv) {
                         next_interim =
                             std::chrono::steady_clock::now() +
                             std::chrono::seconds(config.interim_interval);
+                    }
+                    if (now >= next_flow) {
+                        try {
+                            sample_flows(timer_db, nft);
+                        } catch (const std::exception& exception) {
+                            log_error(std::string("flow sampling failed: ") +
+                                      exception.what());
+                        }
+                        next_flow =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::seconds(config.flow_sample_interval);
                     }
                     std::this_thread::sleep_for(
                         std::chrono::milliseconds(200));

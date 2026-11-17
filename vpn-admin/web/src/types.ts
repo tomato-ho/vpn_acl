@@ -57,6 +57,7 @@ export interface SettingsValues {
 }
 
 export interface HistorySession {
+  session_id: string
   username: string
   virtual_ip: string
   remote_ip: string
@@ -77,6 +78,27 @@ export interface SessionHistoryStats {
   total_seconds: number
   bytes_in: number
   bytes_out: number
+}
+
+export interface AccessLogRow {
+  id: number
+  session_id: string
+  username: string
+  virtual_ip: string
+  dest_ip: string
+  action: 'allow' | 'deny'
+  bytes_up: number
+  bytes_down: number
+  first_seen: string
+  last_seen: string
+}
+
+export interface AccessLogStats {
+  records: number
+  users: number
+  targets: number
+  bytes_up: number
+  bytes_down: number
 }
 
 export interface AuthFailure {

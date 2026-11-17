@@ -21,6 +21,7 @@ struct SessionHistoryQuery {
 };
 
 struct HistorySession {
+    std::string session_id;
     std::string username;
     std::string virtual_ip;
     std::string remote_ip;

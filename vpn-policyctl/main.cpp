@@ -74,7 +74,8 @@ void usage() {
         << "  show <username>\n"
         << "  password-reset <username>\n"
         << "  retention-cleanup [--apply] [--session-days N] [--auth-log-days N]\n"
-        << "                    [--audit-days N] [--batch-size N]\n"
+        << "                    [--audit-days N] [--access-days N]\n"
+        << "                    [--batch-size N]\n"
         << "  settings-show\n";
 }
 
@@ -748,6 +749,10 @@ RetentionPolicy retention_policy(const Flags& flags) {
         policy.audit_days =
             parse_u32_or_throw(flag_value(flags, "audit-days"), "audit-days");
     }
+    if (!flag_value(flags, "access-days").empty()) {
+        policy.access_days = parse_u32_or_throw(
+            flag_value(flags, "access-days"), "access-days");
+    }
     if (!flag_value(flags, "batch-size").empty()) {
         policy.batch_size = parse_u32_or_throw(
             flag_value(flags, "batch-size"), "batch-size");
@@ -801,6 +806,10 @@ void cmd_retention_cleanup(Db& db, const Flags& flags) {
         retention_auth_log_condition(policy.auth_log_days);
     const std::string audit_condition =
         retention_audit_condition(policy.audit_days);
+    const std::string access_condition =
+        retention_access_condition(policy.access_days);
+    const std::string flow_state_condition =
+        retention_flow_state_condition(policy.access_days);
 
     const auto session_rows = delete_old_rows(
         db, "vpn_session_history", session_condition, policy.batch_size,
@@ -811,6 +820,12 @@ void cmd_retention_cleanup(Db& db, const Flags& flags) {
     const auto audit_rows =
         delete_old_rows(db, "vpn_audit_log", audit_condition,
                         policy.batch_size, policy.apply);
+    const auto access_rows =
+        delete_old_rows(db, "vpn_access_log", access_condition,
+                        policy.batch_size, policy.apply);
+    const auto flow_state_rows =
+        delete_old_rows(db, "vpn_flow_state", flow_state_condition,
+                        policy.batch_size, policy.apply);
 
     const std::string prefix = policy.apply ? "deleted" : "would delete";
     std::cout << "vpn_session_history " << prefix << "=" << session_rows
@@ -819,6 +834,10 @@ void cmd_retention_cleanup(Db& db, const Flags& flags) {
               << " older_than_days=" << policy.auth_log_days << "\n";
     std::cout << "vpn_audit_log " << prefix << "=" << audit_rows
               << " older_than_days=" << policy.audit_days << "\n";
+    std::cout << "vpn_access_log " << prefix << "=" << access_rows
+              << " older_than_days=" << policy.access_days << "\n";
+    std::cout << "vpn_flow_state " << prefix << "=" << flow_state_rows
+              << " older_than_days=" << policy.access_days << "\n";
     if (!policy.apply) {
         std::cout << "dry-run: no rows were deleted; pass --apply to delete\n";
     }

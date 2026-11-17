@@ -141,7 +141,7 @@ std::vector<HistorySession> load_session_rows(Db& db,
                                               std::uint64_t offset) {
     const std::string where = session_where(db, query);
     const auto rows = db.query(
-        "SELECT r.username, IFNULL(r.virtual_ip, ''), "
+        "SELECT r.session_id, r.username, IFNULL(r.virtual_ip, ''), "
         "IFNULL(r.remote_ip, ''), "
         "DATE_FORMAT(r.start_time, '%Y-%m-%d %H:%i:%s'), "
         "r.stop_time_text, "
@@ -170,21 +170,22 @@ std::vector<HistorySession> load_session_rows(Db& db,
     std::vector<HistorySession> sessions;
     sessions.reserve(rows.size());
     for (const auto& row : rows) {
-        if (row.size() < 11) {
+        if (row.size() < 12) {
             continue;
         }
         HistorySession session;
-        session.username = row[0];
-        session.virtual_ip = row[1];
-        session.remote_ip = row[2];
-        session.start_time = row[3];
-        session.stop_time = row[4];
-        session.duration_seconds = parse_u64(row[5]);
-        session.bytes_in = parse_u64(row[6]);
-        session.bytes_out = parse_u64(row[7]);
-        session.terminate_cause = row[8];
-        const bool is_open = parse_u64(row[9]) != 0;
-        session.user_exists = parse_u64(row[10]) != 0;
+        session.session_id = row[0];
+        session.username = row[1];
+        session.virtual_ip = row[2];
+        session.remote_ip = row[3];
+        session.start_time = row[4];
+        session.stop_time = row[5];
+        session.duration_seconds = parse_u64(row[6]);
+        session.bytes_in = parse_u64(row[7]);
+        session.bytes_out = parse_u64(row[8]);
+        session.terminate_cause = row[9];
+        const bool is_open = parse_u64(row[10]) != 0;
+        session.user_exists = parse_u64(row[11]) != 0;
 
         if (!is_open) {
             session.state = "closed";

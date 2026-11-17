@@ -366,6 +366,104 @@ bool NftManager::read_state(NftState* state, std::string* error) {
     return true;
 }
 
+bool NftManager::read_flow_counters(std::vector<FlowCounter>* counters,
+                                    std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (counters) {
+        counters->clear();
+    }
+    if (dry_run_) {
+        return true;
+    }
+
+    std::string output;
+    if (!run_capture({"-j", "list", "table", "inet", table_}, &output,
+                     error)) {
+        return false;
+    }
+    std::string parse_error;
+    auto parsed = parse_flow_counters_json(output, &parse_error);
+    if (!parse_error.empty()) {
+        if (error) {
+            *error = parse_error;
+        }
+        return false;
+    }
+    if (counters) {
+        *counters = std::move(parsed);
+    }
+    return true;
+}
+
+bool NftManager::flush_flows(const std::string& ip, std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (dry_run_) {
+        return true;
+    }
+    std::vector<FlowCounter> counters;
+    if (!read_flow_counters(&counters, error)) {
+        return false;
+    }
+
+    std::string script;
+    for (const auto& counter : counters) {
+        if (counter.src_ip != ip) {
+            continue;
+        }
+        script += "delete element inet " + table_ + " " + counter.set_name +
+                  " { " + counter.src_ip + " . " + counter.dest_ip + " }\n";
+    }
+    if (script.empty()) {
+        return true;
+    }
+    return run_script(script, error);
+}
+
+bool NftManager::has_flow_sets(bool* present) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (present) {
+        *present = false;
+    }
+    if (dry_run_) {
+        if (present) {
+            *present = true;
+        }
+        return true;
+    }
+    if (!table_exists()) {
+        return true;
+    }
+    for (const char* name :
+         {kFlowSetAllowUp, kFlowSetAllowDown, kFlowSetDeny}) {
+        if (!run_args({"list", "set", "inet", table_, name}, nullptr, true)) {
+            return true;
+        }
+    }
+    if (present) {
+        *present = true;
+    }
+    return true;
+}
+
+bool NftManager::rebuild(const std::vector<NftSessionUpdate>& sessions,
+                         std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::string script;
+    if (!dry_run_ && table_exists()) {
+        script += "delete table inet " + table_ + "\n";
+    }
+    script += nft_base_script(table_, tun_iface_);
+    for (const auto& session : sessions) {
+        if (session.remove) {
+            continue;
+        }
+        script += nft_session_script(table_, tun_iface_, session.username,
+                                     session.virtual_ip, session.allow,
+                                     session.services);
+    }
+    return run_script(script, error);
+}
+
 bool NftManager::apply_updates(const std::vector<NftSessionUpdate>& updates,
                                NftBatchStats* stats,
                                std::string* error) {

@@ -44,6 +44,16 @@ public:
                         std::uint32_t virtual_ip,
                         std::string* error);
     bool read_state(NftState* state, std::string* error);
+    // 读取三个审计集合的元素计数。
+    bool read_flow_counters(std::vector<FlowCounter>* counters,
+                            std::string* error);
+    // 删除某个客户端 IP 在所有审计集合里的元素（连接/断开时清理）。
+    bool flush_flows(const std::string& ip, std::string* error);
+    // 检测现有表是否包含审计集合（用于升级时触发重建）。
+    bool has_flow_sets(bool* present);
+    // 原子重建表：delete table + base + 给定会话。
+    bool rebuild(const std::vector<NftSessionUpdate>& sessions,
+                 std::string* error);
     bool cleanup_orphans(const std::set<std::string>& keep_ips,
                          const std::set<std::string>& keep_chains,
                          std::size_t* removed_elements,

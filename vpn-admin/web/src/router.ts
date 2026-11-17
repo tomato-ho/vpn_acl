@@ -40,6 +40,11 @@ const router = createRouter({
           component: () => import('./views/Sessions.vue'),
         },
         {
+          path: 'access',
+          name: 'access',
+          component: () => import('./views/Access.vue'),
+        },
+        {
           path: 'audit',
           name: 'audit',
           component: () => import('./views/Audit.vue'),

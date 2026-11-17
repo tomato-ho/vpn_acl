@@ -19,6 +19,8 @@ radius_retries=2
 
 accounting_enabled=0
 interim_interval=300
+# 访问审计采样间隔（秒）。必须明显小于 nft 集合的 10m 过期时间。
+flow_sample_interval=30
 reconcile_interval=30
 reconcile_grace=120
 recover_grace=15

@@ -129,9 +129,11 @@ void test_nft() {
         "vpn_acl", "tun0", "alice", *vpn::parse_ipv4("10.8.0.31"),
         {cidr("192.168.100.0/24")},
         {*vpn::parse_service("192.168.100.109:22/tcp")});
-    check(script.find("ip daddr { 192.168.100.0/24 } accept") != std::string::npos,
+    check(script.find("ip daddr { 192.168.100.0/24 } update @flows "
+                      "{ ip saddr . ip daddr } accept") != std::string::npos,
           "nft forward allow rule");
-    check(script.find("ip daddr 192.168.100.109 tcp dport 22 accept") !=
+    check(script.find("ip daddr 192.168.100.109 tcp dport 22 update @flows "
+                      "{ ip saddr . ip daddr } accept") !=
               std::string::npos,
           "nft input service rule");
     check(script.find("10.8.0.31 : jump uf_") != std::string::npos,

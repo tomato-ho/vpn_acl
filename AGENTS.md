@@ -29,7 +29,8 @@ output; the default path has no FreeRADIUS/PAM dependency.
   (`radius.cpp`: RFC 2866 encoding, MD5 authenticator, UDP retransmission).
 - `libvpnservice/` — DB-backed domain logic shared by `vpn-admin` and tests. Put new
   user/group/service write logic here, not in HTTP handlers.
-  `src/history_source.h` merges `vpn_sessions` + `vpn_session_history` for read paths.
+  `src/history_source.h` merges `vpn_sessions` + `vpn_session_history` for read paths;
+  `src/access_log.cpp` queries `vpn_access_log` for the audit views.
 - `vpn-policyd/` — long-running daemon. Owns nftables table `vpn_acl`, applies per-user
   chains, archives finished sessions, optionally sends RADIUS accounting, reconciles
   sessions, and kicks clients through the OpenVPN management socket.
@@ -75,6 +76,14 @@ output; the default path has no FreeRADIUS/PAM dependency.
   thread, so this mutex is what prevents orphan cleanup from racing a new connect.
 - Auth audit: `vpn_auth_log` (username, remote_ip, success, reason). Rate limiting is
   5 failures/5 min per username and 20/5 min per IP.
+- Access audit: nft sets `flows` / `flows_rev` / `flows_deny` (key `ip saddr . ip daddr`,
+  per-element `counter`, 10m timeout). `vpn-policyd` samples them every
+  `flow_sample_interval` seconds into `vpn_access_log` (one row per
+  session × dest × allow/deny) and stores the raw counters in `vpn_flow_state` so a
+  restart continues from the previous baseline. Always sample before
+  `remove_session`, then flush that client's set elements and state rows.
+  `vpn-policyd` rebuilds the whole `vpn_acl` table in one atomic script when the sets
+  are missing (upgrade path).
 - Admin API auth is a session cookie plus `X-CSRF-Token` on non-GET requests; use the
   existing `require_session(..., true)` path for new mutating routes.
 
@@ -87,6 +96,9 @@ output; the default path has no FreeRADIUS/PAM dependency.
 - Accounting is optional: `accounting_enabled=1` plus `radius_server` / `radius_port` /
   `radius_secret` (`radius_timeout_ms`, `radius_retries`). Start FreeRADIUS with
   `podman-compose --profile radius up -d`. There is no radcli config file.
+- Access audit sampling: `flow_sample_interval` (default 30s, clamped 5..300) must stay
+  well below the nft set timeout (10m). `retention-cleanup --access-days N` controls
+  `vpn_access_log` / `vpn_flow_state` retention (default 180 days).
 - A config path that is a directory resolves to `<dir>/vpn-policy.conf`. Defaults:
   `vpn-policyctl`/`vpn-client-connect`/`vpn-auth-check` use `/etc/vpn-policy/config`,
   `vpn-policyd` uses `policyd.conf`, and `vpn-admin` uses `admin.conf`.
@@ -105,7 +117,10 @@ output; the default path has no FreeRADIUS/PAM dependency.
   freshly signed CA (`certificate is not yet valid`).
 - Reliability regression: `deploy/test-reliability.sh` (needs a running stack)
   covers reconnect isolation, concurrent connects, policy-version polling and
-  reconcile recovery. `deploy/soak-faults.sh` injects faults on a schedule and
+  reconcile recovery. `deploy/test-access-audit.sh` covers allow/deny flow
+  accounting (real client in netns), policyd restart continuity and final sampling;
+  it temporarily adds `tun0`/the peer veth to the firewalld `trusted` zone and
+  restores it on exit. `deploy/soak-faults.sh` injects faults on a schedule and
   `deploy/soak-monitor.sh` samples health/resources to CSV for long runs.
 - `install.sh` does not touch firewalld: open `http`, `https`, `1194/udp` manually and
   add masquerade for the tunnel network on routed deployments.
@@ -121,9 +136,11 @@ output; the default path has no FreeRADIUS/PAM dependency.
   (`libmariadb`, `libspdlog`, `libfmt`, `libnl*`, `liblzo2`, `liblz4`, `libcap-ng`,
   nftables libs) into `deploy/build-context/` (gitignored). The base image is pinned to
   Rocky Linux 10, so binaries must be built on an EL10 host.
-- `sql/` is not auto-applied by Compose; `install.sh` applies 001/002/003/004/007/009 and
-  runs 006/008 only when the FreeRADIUS tables exist. FreeRADIUS tables (`radcheck`,
-  `radacct`, `radpostauth`, `nas`, …) are optional and must be imported separately.
+- `sql/` is not auto-applied by Compose; `install.sh` calls `deploy/migrate.sh`, which
+  applies every `sql/*.sql` in filename order and records it in `schema_migrations`
+  (skipping 006/008 when the optional FreeRADIUS tables are absent). FreeRADIUS tables
+  (`radcheck`, `radacct`, `radpostauth`, `nas`, …) are optional and must be imported
+  separately.
 - Re-running `sql/001_vpn_schema.sql` resets `vpn_settings` to its default values.
 - Do not hand-edit `vpn-admin/web/dist`; rebuild from `web/src`.
 - `tunnel_network` has two sources of truth: `vpn_settings.tunnel_network` and the

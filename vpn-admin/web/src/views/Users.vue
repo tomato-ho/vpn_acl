@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
 import { apiErrorMessage } from '../api/errors'
@@ -26,6 +27,12 @@ const passwordUser = ref('')
 
 const showRules = ref(false)
 const rulesUser = ref('')
+const router = useRouter()
+
+function openAccess(row: unknown) {
+  const user = row as UserRow
+  router.push({ path: '/access', query: { username: user.username } })
+}
 
 async function load() {
   loading.value = true
@@ -184,11 +191,12 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" min-width="180" />
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="openPassword(row)">密码</el-button>
             <el-button link type="primary" @click="openRules(row)">规则</el-button>
+            <el-button link type="primary" @click="openAccess(row)">访问记录</el-button>
             <el-button link type="danger" @click="removeUser(row)">删除</el-button>
           </template>
         </el-table-column>

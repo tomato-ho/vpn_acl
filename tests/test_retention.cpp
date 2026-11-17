@@ -36,6 +36,12 @@ void test_defaults() {
     check(vpn::retention_audit_condition(policy.audit_days) ==
               "created_at < NOW() - INTERVAL 365 DAY",
           "audit condition");
+    check(vpn::retention_access_condition(policy.access_days) ==
+              "last_seen < NOW() - INTERVAL 180 DAY",
+          "access condition");
+    check(vpn::retention_flow_state_condition(policy.access_days) ==
+              "updated_at < NOW() - INTERVAL 180 DAY",
+          "flow state condition");
 }
 
 void test_invalid_values() {
@@ -46,6 +52,10 @@ void test_invalid_values() {
     policy = vpn::RetentionPolicy{};
     policy.batch_size = 0;
     expect_invalid(policy, "reject zero batch size");
+
+    policy = vpn::RetentionPolicy{};
+    policy.access_days = 0;
+    expect_invalid(policy, "reject zero access days");
 
     policy = vpn::RetentionPolicy{};
     policy.batch_size = 10001;

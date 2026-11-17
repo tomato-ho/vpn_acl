@@ -59,10 +59,12 @@ void test_new_session() {
           "new session forward chain");
     check(plan.script.find("add chain inet vpn_acl ui_") != std::string::npos,
           "new session input chain");
-    check(plan.script.find("ip daddr { 192.168.100.0/24 } accept") !=
+    check(plan.script.find("ip daddr { 192.168.100.0/24 } update @flows "
+                           "{ ip saddr . ip daddr } accept") !=
               std::string::npos,
           "new session allow rule");
-    check(plan.script.find("192.168.100.109 tcp dport 22 accept") !=
+    check(plan.script.find("192.168.100.109 tcp dport 22 update @flows "
+                           "{ ip saddr . ip daddr } accept") !=
               std::string::npos,
           "new session service rule");
     check(plan.script.find("10.8.0.31 : jump uf_") != std::string::npos,

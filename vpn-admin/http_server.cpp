@@ -5,6 +5,7 @@
 #include "vpn/password.h"
 #include "vpn/policy_store.h"
 #include "vpn/service/admin_read.h"
+#include "vpn/service/access_log.h"
 #include "vpn/service/transaction.h"
 #include "vpn/service/errors.h"
 #include "vpn/service/group_write.h"
@@ -184,8 +185,28 @@ service::SessionHistoryQuery parse_history_query(
     return query;
 }
 
+service::AccessLogQuery parse_access_query(const httplib::Request& req) {
+    service::AccessLogQuery query;
+    query.range = req.has_param("range") ? req.get_param_value("range") : "7d";
+    query.from = req.has_param("from") ? req.get_param_value("from") : "";
+    query.to = req.has_param("to") ? req.get_param_value("to") : "";
+    query.username =
+        req.has_param("username") ? req.get_param_value("username") : "";
+    query.session_id =
+        req.has_param("session_id") ? req.get_param_value("session_id") : "";
+    query.dest_ip =
+        req.has_param("dest_ip") ? req.get_param_value("dest_ip") : "";
+    query.dest_cidr =
+        req.has_param("dest_cidr") ? req.get_param_value("dest_cidr") : "";
+    query.action = req.has_param("action") ? req.get_param_value("action") : "";
+    query.page = query_u32(req, "page", 1, 1, 1000000);
+    query.page_size = query_u32(req, "page_size", 50, 1, 200);
+    return query;
+}
+
 json history_session_json(const service::HistorySession& session) {
-    return json{{"username", session.username},
+    return json{{"session_id", session.session_id},
+                {"username", session.username},
                 {"virtual_ip", session.virtual_ip},
                 {"remote_ip", session.remote_ip},
                 {"start_time", session.start_time},
@@ -261,6 +282,42 @@ std::string auth_csv(const std::vector<service::AuthFailure>& rows) {
             << (row.user_exists ? "true" : "false") << '\n';
     }
     return out.str();
+}
+
+std::string access_csv(const std::vector<service::AccessLogRow>& rows) {
+    std::ostringstream out;
+    out << "session_id,username,virtual_ip,dest_ip,action,bytes_up,bytes_down,"
+           "first_seen,last_seen\n";
+    for (const auto& row : rows) {
+        out << csv_escape(row.session_id) << ',' << csv_escape(row.username)
+            << ',' << csv_escape(row.virtual_ip) << ','
+            << csv_escape(row.dest_ip) << ',' << csv_escape(row.action) << ','
+            << row.bytes_up << ',' << row.bytes_down << ','
+            << csv_escape(row.first_seen) << ','
+            << csv_escape(row.last_seen) << '\n';
+    }
+    return out.str();
+}
+
+json access_json(const service::AccessLogRow& row) {
+    return json{{"id", row.id},
+                {"session_id", row.session_id},
+                {"username", row.username},
+                {"virtual_ip", row.virtual_ip},
+                {"dest_ip", row.dest_ip},
+                {"action", row.action},
+                {"bytes_up", row.bytes_up},
+                {"bytes_down", row.bytes_down},
+                {"first_seen", row.first_seen},
+                {"last_seen", row.last_seen}};
+}
+
+json access_stats_json(const service::AccessLogStats& stats) {
+    return json{{"records", stats.records},
+                {"users", stats.users},
+                {"targets", stats.targets},
+                {"bytes_up", stats.bytes_up},
+                {"bytes_down", stats.bytes_down}};
 }
 
 void send_csv(httplib::Response& res,
@@ -1675,6 +1732,37 @@ void HttpServer::setup_routes() {
         });
     });
 
+    server_.Get(R"(/api/sessions/([^/]+)/access)",
+                [this](const httplib::Request& req,
+                       httplib::Response& res) {
+                    handle(res, [&]() {
+                        if (!require_session(req, res, sessions_, false)) {
+                            return;
+                        }
+                        auto query = parse_access_query(req);
+                        if (!req.has_param("range")) {
+                            query.range = "all";
+                        }
+                        query.session_id = req.matches[1].str();
+                        auto lease = pool_.acquire();
+                        const auto result =
+                            service::query_access_log(lease.db(), query);
+                        json items = json::array();
+                        for (const auto& row : result.items) {
+                            items.push_back(access_json(row));
+                        }
+                        send_json(
+                            res, 200,
+                            json{{"items", items},
+                                 {"total", result.total},
+                                 {"page", result.page},
+                                 {"page_size", result.page_size},
+                                 {"stats", access_stats_json(
+                                               service::query_access_log_stats(
+                                                   lease.db(), query))}});
+                    });
+                });
+
     server_.Post(R"(/api/sessions/([^/]+)/kick)",
                  [this](const httplib::Request& req,
                         httplib::Response& res) {
@@ -1787,6 +1875,45 @@ void HttpServer::setup_routes() {
                             lease.db(), query, 10000);
                         send_csv(res, auth_csv(rows),
                                  "vpn-auth-failures.csv");
+                    });
+                });
+
+    server_.Get("/api/access", [this](const httplib::Request& req,
+                                      httplib::Response& res) {
+        handle(res, [&]() {
+            if (!require_session(req, res, sessions_, false)) {
+                return;
+            }
+            const auto query = parse_access_query(req);
+            auto lease = pool_.acquire();
+            const auto result = service::query_access_log(lease.db(), query);
+            json items = json::array();
+            for (const auto& row : result.items) {
+                items.push_back(access_json(row));
+            }
+            send_json(res, 200,
+                      json{{"items", items},
+                           {"total", result.total},
+                           {"page", result.page},
+                           {"page_size", result.page_size},
+                           {"stats", access_stats_json(
+                                         service::query_access_log_stats(
+                                             lease.db(), query))}});
+        });
+    });
+
+    server_.Get("/api/access/export",
+                [this](const httplib::Request& req,
+                       httplib::Response& res) {
+                    handle(res, [&]() {
+                        if (!require_session(req, res, sessions_, false)) {
+                            return;
+                        }
+                        const auto query = parse_access_query(req);
+                        auto lease = pool_.acquire();
+                        const auto rows = service::export_access_log(
+                            lease.db(), query, 10000);
+                        send_csv(res, access_csv(rows), "vpn-access.csv");
                     });
                 });
 

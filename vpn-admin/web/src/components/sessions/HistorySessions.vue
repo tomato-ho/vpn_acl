@@ -6,6 +6,7 @@ import { downloadCsv } from '../../api/csv'
 import { apiErrorMessage } from '../../api/errors'
 import type { HistorySession, SessionHistoryStats } from '../../types'
 import { formatBytes, formatDuration } from '../../utils/format'
+import AccessLogDialog from './AccessLogDialog.vue'
 
 const range = ref('today')
 const customRange = ref<[string, string] | null>(null)
@@ -17,6 +18,9 @@ const loading = ref(false)
 const items = ref<HistorySession[]>([])
 const total = ref(0)
 const stats = ref<SessionHistoryStats | null>(null)
+const accessOpen = ref(false)
+const accessSessionId = ref('')
+const accessUsername = ref('')
 
 function buildParams(withPage: boolean): Record<string, unknown> {
   const params: Record<string, unknown> = {
@@ -111,6 +115,13 @@ function stateType(state: string): 'success' | 'info' | 'warning' {
   if (state === 'online') return 'success'
   if (state === 'closed') return 'info'
   return 'warning'
+}
+
+function showAccess(row: unknown) {
+  const session = row as HistorySession
+  accessSessionId.value = session.session_id ?? ''
+  accessUsername.value = session.username
+  accessOpen.value = true
 }
 
 onMounted(load)
@@ -214,6 +225,13 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="showAccess(row)">
+              访问记录
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pagination">
@@ -228,5 +246,11 @@ onMounted(load)
         />
       </div>
     </el-card>
+
+    <AccessLogDialog
+      v-model="accessOpen"
+      :session-id="accessSessionId"
+      :username="accessUsername"
+    />
   </div>
 </template>

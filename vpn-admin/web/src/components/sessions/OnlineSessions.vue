@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../../api/client'
 import { apiErrorMessage } from '../../api/errors'
+import AccessLogDialog from './AccessLogDialog.vue'
 
 interface SessionRow {
   session_id: string
@@ -19,6 +20,9 @@ interface SessionRow {
 const items = ref<SessionRow[]>([])
 const loading = ref(false)
 const updatedAt = ref('')
+const accessOpen = ref(false)
+const accessSessionId = ref('')
+const accessUsername = ref('')
 let timer: number | undefined
 
 function formatBytes(value: number): string {
@@ -75,6 +79,13 @@ async function kick(row: unknown) {
   }
 }
 
+function showAccess(row: unknown) {
+  const session = row as SessionRow
+  accessSessionId.value = session.session_id
+  accessUsername.value = session.username
+  accessOpen.value = true
+}
+
 onMounted(() => {
   load()
   timer = window.setInterval(load, 10000)
@@ -117,11 +128,20 @@ onBeforeUnmount(() => {
       <el-table-column label="发送" width="130">
         <template #default="{ row }">{{ formatBytes(row.bytes_out) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="showAccess(row)">
+            访问记录
+          </el-button>
           <el-button link type="danger" @click="kick(row)">强制下线</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <AccessLogDialog
+      v-model="accessOpen"
+      :session-id="accessSessionId"
+      :username="accessUsername"
+    />
   </div>
 </template>

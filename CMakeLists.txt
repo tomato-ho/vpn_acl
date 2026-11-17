@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(vpn_acl VERSION 0.2.2 LANGUAGES CXX)
+project(vpn_acl VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +54,8 @@ add_library(vpncore ${VPnCORE_SOURCES})
 target_include_directories(vpncore
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/libvpncore/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
 if(VPN_WITH_DB)
@@ -67,6 +69,7 @@ target_link_libraries(vpncore PUBLIC OpenSSL::Crypto)
 if(VPN_WITH_DB)
     add_library(vpnservice STATIC
         libvpnservice/src/admin_read.cpp
+        libvpnservice/src/access_log.cpp
         libvpnservice/src/group_write.cpp
         libvpnservice/src/metrics_read.cpp
         libvpnservice/src/openvpn_status.cpp
@@ -167,6 +170,10 @@ add_test(NAME vpn_nft_batch_tests COMMAND vpn_nft_batch_tests)
 add_executable(vpn_retention_tests tests/test_retention.cpp)
 target_link_libraries(vpn_retention_tests PRIVATE vpncore)
 add_test(NAME vpn_retention_tests COMMAND vpn_retention_tests)
+
+add_executable(vpn_nft_flow_tests tests/test_nft_flow.cpp)
+target_link_libraries(vpn_nft_flow_tests PRIVATE vpncore)
+add_test(NAME vpn_nft_flow_tests COMMAND vpn_nft_flow_tests)
 
 add_executable(vpn_session_marker_tests tests/test_session_marker.cpp)
 target_link_libraries(vpn_session_marker_tests PRIVATE vpncore)

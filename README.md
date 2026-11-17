@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.2.2**
+当前版本：**0.3.0**
 
 ![Dashboard](images/dashboard.png)
 
@@ -120,6 +120,9 @@ sudo ./deploy/install.sh --with-deps
   `certificate is not yet valid`，而且证书签发后无法“补救”，只能重签。
 - **firewalld**：`install.sh` 不会改防火墙，需要手工放行 `http` / `https` /
   `1194/udp`；路由型 VPN 还需要给 tunnel 网段做 masquerade（或加回程路由）。
+  firewalld 默认会 `reject` 未显式放行的 **转发** 流量，所以还要把 `tun0` 放进
+  trusted 区（`firewall-cmd --zone=trusted --add-interface=tun0`，需要持久化时加
+  `--permanent`），否则 nftables 策略放行了、包仍会被 firewalld 丢掉。
 - **SELinux**：`Enforcing` 环境下 host netns + nft 通常可以工作；若遇到权限拒绝，
   给 `policyd` / `openvpn` 加 `--security-opt label=disable`。
 
@@ -245,6 +248,31 @@ podman exec vpn-retention /usr/local/sbin/vpn-policyctl \
   --config /etc/vpn-policy/config retention-cleanup --apply
 ```
 
+### 访问审计
+
+每个在线会话会记录「目标 IP、允许/拒绝、上下行字节、首次/最后访问时间」，
+用于回答"谁在什么时候访问了什么、哪些被拒绝"，只记元数据，不采集内容。
+
+实现方式：nftables 用三个带 `counter` 的动态集合（`flows` / `flows_rev` /
+`flows_deny`）按「客户端隧道 IP . 目标 IP」计数；`vpn-policyd` 每
+`flow_sample_interval`（默认 30 秒）采样一次，做差后累加到 `vpn_access_log`，
+原始计数器保存在 `vpn_flow_state`，policyd 重启后继续做差，不会把停机期间的
+增量当成基线丢掉。
+
+- Web：「访问审计」页面按用户、目标 IP、目标网段（反查"谁访问过这台机器"）、
+  allow/deny、时间范围查询，支持 CSV 导出；
+- 在线会话 / 历史会话列表有「访问记录」，用户列表也有快捷入口；
+- 默认保留 180 天，可用 `retention-cleanup --access-days N` 调整。
+
+精度边界（重要）：
+
+- 只统计**经过隧道且进入策略链**的流量；split-tunnel 或客户端本地直连看不到；
+- 字节是 L3 转发字节（含 IP 头），与 OpenVPN 会话总量口径不同，属于
+  **审计级近似**，不要用于计费；
+- 目标与 allow/deny 是逐流记录的；暂不记录端口；
+- 单个目标 10 分钟无流量会从 nft 集合过期，之后从 0 重新累计（已写入的历史
+  记录不受影响；极端情况下单个采样窗口可能少计）。
+
 ### 开机自启
 
 `install.sh` 会启用 `podman-restart.service`，容器在宿主重启后自动拉起。
@@ -294,6 +322,15 @@ sudo ./deploy/test-reliability.sh
 ```
 
 覆盖：重连隔离、并发连接、策略版本轮询、reconcile 自愈。
+
+访问审计回归（需要已运行的栈 + openvpn 客户端）：
+
+```bash
+sudo ./deploy/test-access-audit.sh
+```
+
+覆盖：允许目标的上行/下行字节、拒绝目标的记录、policyd 重启后继续累加、
+断开时最终采样与 nft 集合清理。
 
 长时间稳定性（故障注入 + 采样）：
 

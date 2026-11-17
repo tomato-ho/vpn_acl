@@ -19,6 +19,7 @@ void validate_retention_policy(const RetentionPolicy& policy) {
     validate_days(policy.session_days, "session days");
     validate_days(policy.auth_log_days, "auth log days");
     validate_days(policy.audit_days, "audit days");
+    validate_days(policy.access_days, "access days");
     if (policy.batch_size == 0 || policy.batch_size > 10000) {
         throw std::runtime_error("batch size must be between 1 and 10000");
     }
@@ -34,6 +35,14 @@ std::string retention_auth_log_condition(std::uint32_t days) {
 
 std::string retention_audit_condition(std::uint32_t days) {
     return "created_at < NOW() - INTERVAL " + std::to_string(days) + " DAY";
+}
+
+std::string retention_access_condition(std::uint32_t days) {
+    return "last_seen < NOW() - INTERVAL " + std::to_string(days) + " DAY";
+}
+
+std::string retention_flow_state_condition(std::uint32_t days) {
+    return "updated_at < NOW() - INTERVAL " + std::to_string(days) + " DAY";
 }
 
 } // namespace vpn

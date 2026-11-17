@@ -10,6 +10,7 @@ import {
   Setting,
   User,
   UserFilled,
+  View,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 import { useBrandingStore } from '../stores/branding'
@@ -58,6 +59,10 @@ async function logout() {
         <el-menu-item index="/sessions">
           <el-icon><Monitor /></el-icon>
           <span>在线会话</span>
+        </el-menu-item>
+        <el-menu-item index="/access">
+          <el-icon><View /></el-icon>
+          <span>访问审计</span>
         </el-menu-item>
         <el-menu-item index="/audit">
           <el-icon><Document /></el-icon>

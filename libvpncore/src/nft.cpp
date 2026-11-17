@@ -2,11 +2,58 @@
 
 #include "vpn/cidr.h"
 
+#include <nlohmann/json.hpp>
+
 #include <iomanip>
 #include <sstream>
 
 namespace vpn {
 namespace {
+
+// 审计集合的过期时间：比采样间隔长得多，避免活跃流被误判为过期。
+constexpr const char* kFlowSetTimeout = "10m";
+constexpr const char* kFlowSetSize = "65536";
+
+bool is_flow_set(const std::string& name) {
+    return name == kFlowSetAllowUp || name == kFlowSetAllowDown ||
+           name == kFlowSetDeny;
+}
+
+std::string json_ip(const nlohmann::json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number_unsigned()) {
+        return format_ipv4(
+            static_cast<std::uint32_t>(value.get<std::uint64_t>()));
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        if (number >= 0) {
+            return format_ipv4(static_cast<std::uint32_t>(number));
+        }
+        return {};
+    }
+    if (value.is_object() && value.contains("val")) {
+        return json_ip(value["val"]);
+    }
+    return {};
+}
+
+std::uint64_t json_counter(const nlohmann::json& counter, const char* key) {
+    if (!counter.is_object() || !counter.contains(key)) {
+        return 0;
+    }
+    const auto& value = counter[key];
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        return number > 0 ? static_cast<std::uint64_t>(number) : 0;
+    }
+    return 0;
+}
 
 std::string join_cidrs(const std::vector<Cidr>& cidrs) {
     std::ostringstream out;
@@ -22,6 +69,62 @@ std::string join_cidrs(const std::vector<Cidr>& cidrs) {
 }
 
 } // namespace
+
+std::vector<FlowCounter> parse_flow_counters_json(const std::string& json_text,
+                                                  std::string* error) {
+    std::vector<FlowCounter> out;
+    const auto root = nlohmann::json::parse(json_text, nullptr, false);
+    if (root.is_discarded() || !root.is_object() ||
+        !root.contains("nftables") || !root["nftables"].is_array()) {
+        if (error) {
+            *error = "invalid nft json output";
+        }
+        return out;
+    }
+
+    for (const auto& item : root["nftables"]) {
+        if (!item.is_object() || !item.contains("set") ||
+            !item["set"].is_object()) {
+            continue;
+        }
+        const auto& set = item["set"];
+        const std::string name = set.value("name", "");
+        if (!is_flow_set(name)) {
+            continue;
+        }
+        if (!set.contains("elem") || !set["elem"].is_array()) {
+            continue;
+        }
+        for (const auto& entry : set["elem"]) {
+            const nlohmann::json* element = &entry;
+            if (entry.is_object() && entry.contains("elem")) {
+                element = &entry["elem"];
+            }
+            if (!element->is_object() || !element->contains("val")) {
+                continue;
+            }
+            const auto& val = (*element)["val"];
+            if (!val.is_object() || !val.contains("concat") ||
+                !val["concat"].is_array() || val["concat"].size() < 2) {
+                continue;
+            }
+            FlowCounter counter;
+            counter.set_name = name;
+            counter.src_ip = json_ip(val["concat"][0]);
+            counter.dest_ip = json_ip(val["concat"][1]);
+            if (counter.src_ip.empty() || counter.dest_ip.empty()) {
+                continue;
+            }
+            if (element->contains("counter")) {
+                const auto& stat = (*element)["counter"];
+                counter.packets = json_counter(stat, "packets");
+                counter.bytes = json_counter(stat, "bytes");
+            }
+            out.push_back(std::move(counter));
+        }
+    }
+    return out;
+}
 
 std::string nft_chain_hash(const std::string& username) {
     std::uint64_t hash = 1469598103934665603ULL;
@@ -43,8 +146,21 @@ std::string nft_base_script(const std::string& table,
     out << "add map inet " << table
         << " user_in { type ipv4_addr : verdict; }\n";
 
+    // 访问审计集合：键统一为「客户端隧道 IP . 目标 IP」，per-element counter。
+    const char* flow_sets[] = {kFlowSetAllowUp, kFlowSetAllowDown, kFlowSetDeny};
+    for (const char* name : flow_sets) {
+        out << "add set inet " << table << ' ' << name
+            << " { type ipv4_addr . ipv4_addr; flags dynamic,timeout; timeout "
+            << kFlowSetTimeout << "; size " << kFlowSetSize
+            << "; counter; }\n";
+    }
+
     out << "add chain inet " << table
         << " forward { type filter hook forward priority filter - 10; policy accept; }\n";
+    // 下行（目标 -> 客户端）必须在通用 established 放行之前计数。
+    out << "add rule inet " << table << " forward oifname \"" << tun_iface
+        << "\" ct state established,related update @" << kFlowSetAllowDown
+        << " { ip daddr . ip saddr } accept\n";
     out << "add rule inet " << table
         << " forward ct state established,related accept\n";
     out << "add rule inet " << table << " forward iifname \"" << tun_iface
@@ -71,9 +187,11 @@ std::string nft_forward_rules(const std::string& table,
     std::ostringstream out;
     if (!allow.empty()) {
         out << "add rule inet " << table << ' ' << chain
-            << " ip daddr { " << join_cidrs(allow) << " } accept\n";
+            << " ip daddr { " << join_cidrs(allow) << " } update @"
+            << kFlowSetAllowUp << " { ip saddr . ip daddr } accept\n";
     }
-    out << "add rule inet " << table << ' ' << chain << " counter drop\n";
+    out << "add rule inet " << table << ' ' << chain << " update @"
+        << kFlowSetDeny << " { ip saddr . ip daddr } counter drop\n";
     return out.str();
 }
 
@@ -84,9 +202,11 @@ std::string nft_input_rules(const std::string& table,
     for (const auto& service : services) {
         out << "add rule inet " << table << ' ' << chain << " ip daddr "
             << format_ipv4(service.ip) << ' ' << service.protocol
-            << " dport " << service.port << " accept\n";
+            << " dport " << service.port << " update @" << kFlowSetAllowUp
+            << " { ip saddr . ip daddr } accept\n";
     }
-    out << "add rule inet " << table << ' ' << chain << " counter drop\n";
+    out << "add rule inet " << table << ' ' << chain << " update @"
+        << kFlowSetDeny << " { ip saddr . ip daddr } counter drop\n";
     return out.str();
 }
 

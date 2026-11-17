@@ -2,6 +2,31 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.0] - 2026-11-17
+
+访问审计：记录每个会话访问了哪些目标、哪些被拒绝，以及上下行字节。
+
+### Added
+
+- nftables 新增三个审计集合 `flows` / `flows_rev` / `flows_deny`，键为
+  「客户端隧道 IP . 目标 IP」，元素自带 `counter`，10 分钟无流量自动过期。
+  forward/input 的 allow 规则与 drop 规则都会更新对应集合。
+- `vpn-policyd` 每 `flow_sample_interval`（默认 30 秒）采样集合计数器，
+  按会话累加到 `vpn_access_log`（目标、allow/deny、上下行字节、首次/最后访问）。
+- 原始计数器保存在 `vpn_flow_state`，policyd 重启后继续做差；连接时清理该 IP
+  的旧元素，断开/reconcile 清理前做最终采样再删除规则与基线。
+- 升级时若现有 `vpn_acl` 缺少审计集合，policyd 用单个 `nft -f` 原子重建表并
+  恢复所有在线会话。
+- 新增 API：`/api/sessions/{id}/access`、`/api/access`（用户/目标 IP/目标网段
+  反查/allow-deny/时间范围）、`/api/access/export`。
+- Web 新增「访问审计」页面；在线会话、历史会话、用户列表都有「访问记录」入口。
+- `vpn_session_history` 新增 `session_id`，历史会话可直接关联访问记录
+  （`sql/011_session_history_session_id.sql`）。
+- `retention-cleanup` 新增 `--access-days`（默认 180 天），同时清理
+  `vpn_access_log` 与 `vpn_flow_state`。
+- 新增 `deploy/test-access-audit.sh`：真实客户端验证 allow/deny、上下行字节、
+  policyd 重启不丢、断开最终采样与集合清理。
+
 ## [0.2.2] - 2026-11-17
 
 运维与测试脚本修复。
