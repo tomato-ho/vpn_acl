@@ -101,6 +101,10 @@ output; the default path has no FreeRADIUS/PAM dependency.
   `VPN_DB_USER`, and `VPN_DB_PASSWORD` override the corresponding `db_*` file keys.
   `VPN_RADIUS_SECRET` overrides `radius_secret`. `VPN_ADMIN_BIND` overrides `bind`
   (needed inside containers: bind `0.0.0.0`, publish on `127.0.0.1`).
+- All containers inherit `TZ` from `.env` (`TZ: ${TZ:-Asia/Shanghai}` in
+  `compose.yaml`). Keep it set for `policyd`, `openvpn`, `web` and `retention` too;
+  otherwise their spdlog/OpenVPN/nginx timestamps are UTC while DB and `vpn-admin`
+  are local. Recreate containers (not just restart) after changing `TZ`.
 - Accounting is optional: `accounting_enabled=1` plus `radius_server` / `radius_port` /
   `radius_secret` (`radius_timeout_ms`, `radius_retries`). Start FreeRADIUS with
   `podman-compose --profile radius up -d`. There is no radcli config file.

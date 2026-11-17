@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.3.1**
+当前版本：**0.3.2**
 
 ![Dashboard](images/dashboard.png)
 
@@ -232,6 +232,19 @@ podman-compose up -d
 | OpenVPN 证书 | `/etc/openvpn/server/`（可通过 `VPN_OPENVPN_CERTS` 覆盖） |
 | Web 证书 | `/etc/nginx/ssl/` |
 | 日志 | `podman logs vpn-policyd` / `vpn-openvpn` / `vpn-admin` |
+
+### 时区与日志时间
+
+所有容器都通过 `.env` 的 `TZ` 继承时区（默认 `Asia/Shanghai`）。因此：
+
+- `podman logs -t` 外层时间、`vpn-policyd` 文件日志、OpenVPN 日志与 status
+  中的可读时间、nginx access log、数据库 `NOW()` 都是同一时区；
+- OpenVPN status 的 `Connected Since (time_t)` 仍是 epoch，不受时区影响；
+- 0.3.1 及更早版本的 `policyd` 日志文件内容是 UTC，升级时已被重命名为
+  `vpn-policyd.log.utc`，新文件从本地时间开始。
+
+如果部署在别的时区，修改 `.env` 的 `TZ` 后执行 `podman-compose up -d`
+重建容器即可。
 
 ### 监控
 

@@ -2,6 +2,20 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.2] - 2026-11-17
+
+修复容器日志时区不一致。
+
+### Fixed
+
+- `compose.yaml` 为 `policyd`、`openvpn`、`web`、`retention` 补上
+  `TZ: ${TZ:-Asia/Shanghai}`。此前这四个容器使用 UTC，而 MariaDB、`vpn-admin`
+  和数据库时间使用本地时区，导致 `podman logs -t` 外层时间与日志内容相差 8 小时。
+- 现在 policyd 文件日志、OpenVPN 日志与 status 可读时间、nginx access log、
+  retention 环境均为本地时区；OpenVPN status 的 epoch 字段不变。
+- 升级时旧的 `vpn-policyd.log` 已轮转为 `vpn-policyd.log.utc`，新日志从本地时间开始。
+- 文档补充时区说明；修改 `.env` 的 `TZ` 后需要重建容器（`restart` 不会更新环境变量）。
+
 ## [0.3.1] - 2026-11-17
 
 访问审计的计量与策略正确性修复。
