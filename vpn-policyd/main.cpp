@@ -830,6 +830,56 @@ void sample_flows_locked(Db& db,
         }
     }
 
+    // 容量告警：集合是全局的，扫描型客户端可能挤掉其他用户的审计元素。
+    std::size_t set_counts[3] = {0, 0, 0};
+    for (const auto& counter : counters) {
+        if (counter.set_name == kFlowSetAllowUp) {
+            ++set_counts[0];
+        } else if (counter.set_name == kFlowSetAllowDown) {
+            ++set_counts[1];
+        } else if (counter.set_name == kFlowSetDeny) {
+            ++set_counts[2];
+        }
+    }
+    const char* set_names[3] = {kFlowSetAllowUp, kFlowSetAllowDown,
+                                kFlowSetDeny};
+    static bool warned_sets[3] = {false, false, false};
+    const std::size_t threshold = kFlowSetCapacity * 9 / 10;
+    for (std::size_t i = 0; i < 3; ++i) {
+        if (set_counts[i] >= threshold && !warned_sets[i]) {
+            log_warn("audit set " + std::string(set_names[i]) + " is near " +
+                     "capacity: " + std::to_string(set_counts[i]) + "/" +
+                     std::to_string(kFlowSetCapacity));
+            warned_sets[i] = true;
+        } else if (set_counts[i] < threshold) {
+            warned_sets[i] = false;
+        }
+    }
+
+    std::map<std::string, std::size_t> session_targets;
+    for (const auto& entry : raw) {
+        ++session_targets[std::get<0>(entry.first)];
+    }
+    static std::set<std::string> warned_sessions;
+    for (auto it = warned_sessions.begin(); it != warned_sessions.end();) {
+        if (session_targets.find(*it) == session_targets.end()) {
+            it = warned_sessions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const auto& entry : session_targets) {
+        if (entry.second >= 10000) {
+            if (warned_sessions.insert(entry.first).second) {
+                log_warn("audit session " + entry.first + " has " +
+                         std::to_string(entry.second) +
+                         " active targets; consider a per-session row cap");
+            }
+        } else {
+            warned_sessions.erase(entry.first);
+        }
+    }
+
     SampleTransaction transaction(db);
 
     std::map<Key, std::pair<std::uint64_t, std::uint64_t>> previous;
@@ -1658,6 +1708,17 @@ void handle_refresh(const IpcFields& fields,
     throw std::runtime_error("refresh partially failed: " + fallback_error);
 }
 
+void secure_management_socket(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    struct stat info {};
+    if (::stat(path.c_str(), &info) == 0 && S_ISSOCK(info.st_mode) &&
+        (info.st_mode & 0777) != 0660) {
+        ::chmod(path.c_str(), 0660);
+    }
+}
+
 void reconcile(Db& db,
                NftManager& nft,
                AccountingWorker* accounting,
@@ -1666,6 +1727,9 @@ void reconcile(Db& db,
     if (config.dry_run) {
         return;
     }
+    // OpenVPN 以 0777 创建 management socket；目录虽然已是 0750 root，
+    // 这里再收紧到 root:root 0660（policyd/OpenVPN 均以 root 运行）。
+    secure_management_socket(config.management_socket);
     std::string base_error;
     if (!nft.ensure_base(&base_error)) {
         log_warn("nftables base check failed: " + base_error);

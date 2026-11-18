@@ -15,6 +15,8 @@ namespace vpn {
 inline constexpr const char* kFlowSetAllowUp = "flows";
 inline constexpr const char* kFlowSetAllowDown = "flows_rev";
 inline constexpr const char* kFlowSetDeny = "flows_deny";
+// 三个集合的硬上限；policyd 采样时会接近上限告警。
+inline constexpr std::size_t kFlowSetCapacity = 65536;
 
 struct FlowCounter {
     std::string set_name;

@@ -23,7 +23,13 @@ async function submit() {
   try {
     await auth.login(form.username, form.password)
     const redirect = route.query.redirect
-    await router.push(typeof redirect === 'string' ? redirect : '/dashboard')
+    const target =
+      typeof redirect === 'string' &&
+      redirect.startsWith('/') &&
+      !redirect.startsWith('//')
+        ? redirect
+        : '/dashboard'
+    await router.push(target)
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {

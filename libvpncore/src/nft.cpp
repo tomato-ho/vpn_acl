@@ -15,7 +15,6 @@ namespace {
 // 防止扫描流量长期占用容量。
 constexpr const char* kFlowSetTimeout = "24h";
 constexpr const char* kFlowDenyTimeout = "10m";
-constexpr const char* kFlowSetSize = "65536";
 
 bool is_flow_set(const std::string& name) {
     return name == kFlowSetAllowUp || name == kFlowSetAllowDown ||
@@ -156,7 +155,8 @@ std::string nft_base_script(const std::string& table,
                                                    : kFlowSetTimeout;
         out << "add set inet " << table << ' ' << name
             << " { type ipv4_addr . ipv4_addr; flags dynamic,timeout; timeout "
-            << timeout << "; size " << kFlowSetSize << "; counter; }\n";
+            << timeout << "; size " << kFlowSetCapacity
+            << "; counter; }\n";
     }
 
     out << "add chain inet " << table

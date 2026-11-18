@@ -2,6 +2,24 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.5] - 2026-11-18
+
+P2 安全加固：数据库凭据、Web 安全头与审计容量告警。
+
+### Changed
+
+- 轮换数据库凭据：`MARIADB_ROOT_PASSWORD` 与 `MARIADB_PASSWORD` 分开，并同步
+  `admin.conf` / `policyd.conf` / `vpn-policy.conf`；旧 `.env` 的 root/app 同密码
+  已修正。应用 DB 账号仍保留 `ALL` 权限，最小权限拆分仍作为后续可选项。
+- nginx 增加 CSP；修复 `/assets/` 因自身 `add_header` 丢失 HSTS/nosniff/
+  X-Frame-Options 的问题。登录后的 `redirect` 只接受站内 `/` 路径。
+- `vpn-admin` 的 `/metrics` 增加来源校验（localhost / Podman 网关），
+  nginx 的 127.0.0.1 白名单继续保留。
+- policyd 在 reconcile 时把 OpenVPN management socket 收紧为 `0660`
+  （OpenVPN 创建时固定 0777）。
+- 访问审计采样在集合达到 90% 容量或单会话活跃目标达到 10000 时输出告警，
+  便于在扫描/重连放大前介入。
+
 ## [0.3.4] - 2026-11-17
 
 配置边界、上限、认证风控与健康检查修复。

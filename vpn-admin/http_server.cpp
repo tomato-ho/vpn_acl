@@ -2030,8 +2030,15 @@ void HttpServer::setup_routes() {
         });
     });
 
-    server_.Get("/metrics", [this](const httplib::Request&,
+    server_.Get("/metrics", [this](const httplib::Request& req,
                                    httplib::Response& res) {
+        if (req.remote_addr != "127.0.0.1" &&
+            req.remote_addr != "::1" &&
+            req.remote_addr != "10.89.0.1") {
+            send_error(res, 403, "forbidden",
+                       "metrics are only available from localhost");
+            return;
+        }
         handle(res, [&]() {
             res.set_header("Cache-Control", "no-store");
             res.set_content(metrics_.prometheus() + admin_metrics(),

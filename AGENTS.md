@@ -104,6 +104,12 @@ output; the default path has no FreeRADIUS/PAM dependency.
   `validate_fixed_ip`, group range validation, settings updates and
   `compute_effective_policy` all enforce this. `max_rules_per_user` /
   `max_services_per_user` are enforced on writes/enables, not only at connect.
+- Security hardening: DB root and app passwords must be distinct (install generates
+  separate values; existing `.env` must be rotated manually). Nginx sets CSP and
+  security headers for SPA assets; `vpn-admin` `/metrics` accepts only loopback /
+  the Podman gateway; policyd chmods the OpenVPN management socket to 0660.
+  Audit sampling logs a warning at 90% of the 65536 set capacity or 10000 active
+  targets for one session.
 - Admin API auth is a session cookie plus `X-CSRF-Token` on non-GET requests; use the
   existing `require_session(..., true)` path for new mutating routes.
 
