@@ -176,6 +176,12 @@ do_restore() {
     log "启动全部服务"
     podman-compose up -d >/dev/null
     log "恢复完成（请用备份里的管理员密码登录）"
+
+    # 恢复后自动跑一遍验收，避免“恢复了但起不来”被忽略。
+    if [[ -x deploy/verify.sh ]]; then
+        log "运行 deploy/verify.sh"
+        deploy/verify.sh || warn "verify.sh 报告了失败项，请按上面的清单排查"
+    fi
 }
 
 case "$MODE" in

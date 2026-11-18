@@ -5,7 +5,7 @@
 
 基于 OpenVPN + nftables，纯自托管，不依赖云控制面。
 
-当前版本：**0.3.6**
+当前版本：**1.0.0**
 
 ![Dashboard](images/dashboard.png)
 
@@ -20,6 +20,21 @@
 规则；用户级规则与"有效策略"预览在同一个抽屉里完成。
 
 ---
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [安装与首次使用](README.md#快速开始) | 一键安装、离线安装、代理、检查清单 |
+| [运维手册](docs/operations.md) | 端口、资源、日志、留存、巡检、监控、安全基线 |
+| [升级与回滚](docs/upgrade.md) | `deploy/upgrade.sh`、手动升级步骤、迁移规则 |
+| [备份与恢复](docs/backup-restore.md) | 备份内容、定时备份、恢复、演练、恢复后检查 |
+| [故障排查](docs/troubleshooting.md) | 连不上、访问不了、审计缺失、readyz 失败 |
+| [安全模型与边界](docs/security.md) | 信任边界、已实现防护、已知限制、威胁模型 |
+| [变更记录](CHANGELOG.md) | 版本历史 |
+
+> 部署后先跑 `sudo ./deploy/verify.sh`：30+ 项检查覆盖配置、容器、策略、
+> 审计、证书、时区与日志，退出码非 0 即存在失败项。
 
 ## 为什么不是"又一个 VPN 面板"
 
@@ -375,6 +390,24 @@ sudo ./deploy/soak-monitor.sh --duration 10h
 
 `soak-faults.sh` 会轮流重启 openvpn/mariadb/policyd/admin、刷新网络、
 改策略版本、模拟重连；`soak-monitor.sh` 每 5 分钟写一行 CSV。
+
+交付验收与备份演练（不需要 VPN 客户端）：
+
+```bash
+sudo ./deploy/verify.sh          # 运行中实例的健康与配置检查
+sudo ./deploy/test-restore.sh    # 备份 → 临时库恢复 → 比对
+./deploy/check-version.sh        # 版本号一致性（CMake / package.json / README / CHANGELOG）
+```
+
+升级到新版本：
+
+```bash
+sudo ./deploy/upgrade.sh --check   # 版本与待应用迁移
+sudo ./deploy/upgrade.sh           # 备份 → 迁移 → 重建 → 验收
+sudo ./deploy/upgrade.sh --rollback
+```
+
+详见 [`docs/upgrade.md`](docs/upgrade.md)。
 
 ## 许可证
 

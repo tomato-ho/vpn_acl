@@ -3,6 +3,8 @@
 #include "db_pool.h"
 #include "http_server.h"
 
+#include "vpn/version.h"
+
 #include <csignal>
 #include <unistd.h>
 
@@ -54,6 +56,9 @@ int main(int argc, char** argv) {
             config_path = argv[++i];
         } else if (argument == "--check") {
             check_only = true;
+        } else if (argument == "--version" || argument == "-V") {
+            std::cout << "vpn-admin " << VPN_VERSION << "\n";
+            return 0;
         } else {
             std::cerr << "usage: vpn-admin [--config PATH] [--check]\n";
             return 2;

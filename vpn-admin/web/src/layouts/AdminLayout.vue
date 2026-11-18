@@ -20,6 +20,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const branding = useBrandingStore()
 const showPassword = ref(false)
+const version = __APP_VERSION__
 
 async function logout() {
   await auth.logout()
@@ -77,6 +78,7 @@ async function logout() {
           <span>Metrics</span>
         </el-menu-item>
       </el-menu>
+      <div class="admin-version">v{{ version }}</div>
     </el-aside>
 
     <el-container>
@@ -107,6 +109,15 @@ async function logout() {
 .admin-aside {
   background: #ffffff;
   border-right: 1px solid #e4e7ed;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-version {
+  margin-top: auto;
+  padding: 12px 16px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .admin-brand {

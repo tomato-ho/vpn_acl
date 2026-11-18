@@ -15,6 +15,7 @@
 #include "vpn/service/settings_write.h"
 #include "vpn/service/user_write.h"
 #include "vpn/util.h"
+#include "vpn/version.h"
 
 #include <nlohmann/json.hpp>
 
@@ -2024,7 +2025,8 @@ void HttpServer::setup_routes() {
                 &policyd_error, 1);
             send_json(res,
                       database_up && status_ok && policyd_up ? 200 : 503,
-                      json{{"database", database_up},
+                      json{{"version", VPN_VERSION},
+                           {"database", database_up},
                            {"status_file", status_ok},
                            {"policyd", policyd_up}});
         });

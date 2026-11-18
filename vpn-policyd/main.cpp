@@ -18,6 +18,7 @@
 #include "vpn/session_marker.h"
 #include "vpn/session_recovery.h"
 #include "vpn/util.h"
+#include "vpn/version.h"
 #include "vpn/validation.h"
 
 #include <poll.h>
@@ -2069,6 +2070,9 @@ int main(int argc, char** argv) {
             check_only = true;
         } else if (argument == "--require-db") {
             require_db = true;
+        } else if (argument == "--version" || argument == "-V") {
+            std::cout << "vpn-policyd " << VPN_VERSION << "\n";
+            return 0;
         } else {
             std::cerr << "usage: vpn-policyd [--config PATH] "
                          "[--check [--require-db]]\n";

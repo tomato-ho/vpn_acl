@@ -10,6 +10,7 @@
 #include "vpn/service/limits.h"
 #include "vpn/util.h"
 #include "vpn/validation.h"
+#include "vpn/version.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -896,6 +897,13 @@ void cmd_retention_cleanup(Db& db, const Flags& flags) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 1) {
+        const std::string first = argv[1];
+        if (first == "--version" || first == "-V") {
+            std::cout << "vpn-policyctl " << VPN_VERSION << "\n";
+            return 0;
+        }
+    }
     try {
         std::string config_path = "/etc/vpn-policy/config";
         int index = 1;

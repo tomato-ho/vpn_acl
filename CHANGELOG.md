@@ -2,6 +2,35 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.0.0] - 2026-11-18
+
+首个可交付版本：功能收敛，补齐版本、升级、备份演练、验收与运维文档。
+
+### Added
+
+- `deploy/verify.sh`：交付验收 / 日常巡检，覆盖配置与密码分离、六个容器、
+  镜像一致性、`/readyz`、迁移、nft 表与审计集合、审计相关表、Web 证书与安全头、
+  `/metrics`、未登录 401、时区、磁盘、policyd 日志与 status 新鲜度；
+  支持 `--quiet`、`--no-color` 与可选真实登录（`VPN_ADMIN_USER` / `VPN_ADMIN_PASSWORD`）。
+- `deploy/upgrade.sh`：`--check` 报告版本与待应用迁移，默认流程为
+  备份 → 保留 `:rollback` 镜像 → 构建（含 `ctest`）→ 迁移 → 重建容器 → 验收；
+  `--rollback` 恢复最近备份并切回上一镜像。
+- `deploy/test-restore.sh`：把备份导入临时 MariaDB 容器并比对关键表哈希与行数，
+  不触碰生产数据，用于定期验证备份可用。
+- `deploy/check-version.sh`：校验 `CMakeLists.txt`、`package.json`、`README.md`、
+  `CHANGELOG.md` 的版本一致，已接入 CI。
+- `docs/`：运维手册、升级与回滚、备份与恢复、故障排查、安全模型与边界。
+- `vpn-policyd` / `vpn-admin` / `vpn-policyctl` 支持 `--version`。
+
+### Changed
+
+- 版本号单一来源：CMake `project(VERSION)` 生成 `vpn/version.h`；
+  `/readyz` 返回 `version` 字段，Web 侧边栏底部显示版本。
+- `deploy/backup.sh --restore` 结束后自动运行 `deploy/verify.sh`。
+- `SECURITY.md` 更新支持版本、安全边界与加固基线。
+- README 增加文档索引，运维细节下沉到 `docs/`。
+- 版本号提升到 `1.0.0`（0.3.6 之前的功能与修复见下）。
+
 ## [0.3.6] - 2026-11-18
 
 CLI 与 API 行为对齐。

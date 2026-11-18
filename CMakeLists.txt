@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(vpn_acl VERSION 0.3.6 LANGUAGES CXX)
+project(vpn_acl VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,11 @@ option(VPN_WITH_SPDLOG "Use spdlog for vpn-policyd logging" ON)
 option(VPN_WITH_ADMIN "Build the vpn-admin web service" OFF)
 
 find_package(OpenSSL REQUIRED)
+
+# 版本号唯一来源：project(VERSION ...)。前端 package.json 由 check-version 校验。
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated/vpn)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.h.in
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/vpn/version.h @ONLY)
 
 set(VPnCORE_SOURCES
     libvpncore/src/accounting.cpp
@@ -55,6 +60,7 @@ add_library(vpncore ${VPnCORE_SOURCES})
 target_include_directories(vpncore
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/libvpncore/include
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )

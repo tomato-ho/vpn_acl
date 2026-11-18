@@ -1,0 +1,4 @@
+#pragma once
+
+// 由 CMakeLists.txt 的 project(VERSION ...) 生成，不要手工修改。
+#define VPN_VERSION "@PROJECT_VERSION@"

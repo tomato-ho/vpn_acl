@@ -13,6 +13,13 @@ output; the default path has no FreeRADIUS/PAM dependency.
 - Run one test: `ctest --test-dir build -R vpncore_tests --output-on-failure`, or run
   the binary directly, e.g. `./build/vpncore_tests`.
 - Tests are self-contained: no database, network, nftables, or fixtures required.
+- Delivery checks: `deploy/verify.sh` (running stack, 30+ checks),
+  `deploy/test-restore.sh` (backup → temp MariaDB → compare), `deploy/upgrade.sh
+  --check|--rollback`, and `deploy/check-version.sh` (CMake / package.json / README /
+  CHANGELOG must agree; CI enforces this). `deploy/upgrade.sh` runs `ctest` before
+  rebuilding images.
+- Version comes from `project(VERSION ...)` → generated `vpn/version.h`; binaries
+  accept `--version` and `/readyz` reports `version`.
 - Prerequisites: C++17 compiler, OpenSSL, MariaDB Connector/C (`pkg-config mariadb`
   or `libmariadb`), and spdlog. `VPN_WITH_DB` and `VPN_WITH_SPDLOG` default ON;
   `VPN_WITH_ADMIN` defaults OFF, so plain CMake will not build `vpn-admin`.
