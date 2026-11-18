@@ -56,6 +56,7 @@ cleanup() {
             DELETE r FROM vpn_group_rules r JOIN vpn_groups g
              ON g.id=r.group_id WHERE g.name='$GROUP' OR g.name='$BAD_GROUP';
             DELETE FROM vpn_groups WHERE name='$GROUP' OR name='$BAD_GROUP';
+            DELETE FROM vpn_admins WHERE username='guard-admin';
             UPDATE vpn_policy_version SET version=version+1, updated_at=NOW()
              WHERE id=1;" >/dev/null 2>&1 || true
     rm -f "$AUTH_CRED"
@@ -76,6 +77,14 @@ for ip in 10.9.100.1 10.9.100.0 10.9.100.255; do
 done
 $POLICYCTL --config "$CONFIG" user-add "$USER" --group "$GROUP" \
     --fixed-ip 10.9.100.210 >/dev/null
+if $POLICYCTL --config "$CONFIG" password-reset "$USER" \
+    --password x >/dev/null 2>&1; then
+    fail "A: 过短的用户密码应被拒绝"
+fi
+if $POLICYCTL --config "$CONFIG" admin-create guard-admin \
+    --password x >/dev/null 2>&1; then
+    fail "A: 过短的管理员密码应被拒绝"
+fi
 $POLICYCTL --config "$CONFIG" password-reset "$USER" \
     --password 'GuardTest123!' >/dev/null
 if $POLICYCTL --config "$CONFIG" group-add "$BAD_GROUP" \

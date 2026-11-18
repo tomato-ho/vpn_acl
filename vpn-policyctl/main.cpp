@@ -2,6 +2,7 @@
 #include "vpn/config.h"
 #include "vpn/db.h"
 #include "vpn/db_config.h"
+#include "vpn/ipc.h"
 #include "vpn/parse.h"
 #include "vpn/password.h"
 #include "vpn/policy_store.h"
@@ -166,6 +167,12 @@ std::string obtain_password(const Flags& flags) {
     return first;
 }
 
+void validate_password_value(const std::string& password) {
+    if (password.size() < 8 || password.size() > 256) {
+        throw std::runtime_error("password must be 8-256 bytes");
+    }
+}
+
 void print_policy(const EffectivePolicy& policy) {
     std::cout << "fixed_ip=" << format_ipv4(policy.fixed_ip) << "\n";
     std::cout << "group=" << policy.group_name << "\n";
@@ -192,9 +199,7 @@ void cmd_admin_create(Db& db, const Flags& flags) {
         throw std::runtime_error("invalid username");
     }
     const std::string password = obtain_password(flags);
-    if (password.empty()) {
-        throw std::runtime_error("password must not be empty");
-    }
+    validate_password_value(password);
     const std::string hash = pbkdf2_sha256_admin(password);
 
     Transaction tx(db);
@@ -220,9 +225,7 @@ void cmd_admin_password_reset(Db& db, const Flags& flags) {
     }
 
     const std::string password = obtain_password(flags);
-    if (password.size() < 8) {
-        throw std::runtime_error("password must be at least 8 bytes");
-    }
+    validate_password_value(password);
     const std::string hash = pbkdf2_sha256_admin(password);
 
     Transaction tx(db);
@@ -369,7 +372,8 @@ void cmd_user_add(Db& db, const Flags& flags) {
     std::cout << "user created: " << username << "\n";
 }
 
-void cmd_user_set(Db& db, const Flags& flags) {
+void cmd_user_set(Db& db, const Flags& flags,
+                  const std::string& socket_path) {
     if (flags.positional.size() != 1) {
         throw std::runtime_error("user-set requires <username>");
     }
@@ -384,6 +388,9 @@ void cmd_user_set(Db& db, const Flags& flags) {
     uint32_t group_id = parse_u32_or_throw(rows[0][0], "group id");
     std::string fixed_ip_text = rows[0][1];
     bool enabled = parse_bool(rows[0][2], true);
+    const uint32_t old_group_id = group_id;
+    const std::string old_fixed_ip = fixed_ip_text;
+    const bool old_enabled = enabled;
 
     const std::string new_group_name = flag_value(flags, "group");
     GroupRow group;
@@ -455,6 +462,17 @@ void cmd_user_set(Db& db, const Flags& flags) {
     write_audit(db, "user-set", username,
                 "group=" + group.name + ",enabled=" + (enabled ? "1" : "0"));
     tx.commit();
+    if (enabled != old_enabled || group.id != old_group_id ||
+        fixed_ip_text != old_fixed_ip) {
+        IpcFields fields;
+        fields["username"] = username;
+        std::string response;
+        std::string error;
+        if (!ipc_request(socket_path, "KICK", fields, &response, &error)) {
+            std::cerr << "warning: user updated but kick failed: " << error
+                      << "\n";
+        }
+    }
     std::cout << "user updated: " << username << "\n";
 }
 
@@ -736,9 +754,7 @@ void cmd_password_reset(Db& db, const Flags& flags) {
         throw std::runtime_error("user not found: " + username);
     }
     const std::string password = obtain_password(flags);
-    if (password.empty()) {
-        throw std::runtime_error("password must not be empty");
-    }
+    validate_password_value(password);
     const std::string hash = pbkdf2_sha256_user(password);
 
     Transaction tx(db);
@@ -927,7 +943,9 @@ int main(int argc, char** argv) {
         } else if (command == "user-add") {
             cmd_user_add(db, flags);
         } else if (command == "user-set") {
-            cmd_user_set(db, flags);
+            cmd_user_set(db, flags,
+                         config.get("socket_path",
+                                    "/run/vpn-policyd/policyd.sock"));
         } else if (command == "user-rule-add") {
             cmd_user_rule_add(db, flags, load_validation_config(db));
         } else if (command == "service-add") {

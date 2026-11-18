@@ -2,6 +2,18 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [0.3.6] - 2026-11-18
+
+CLI 与 API 行为对齐。
+
+### Fixed
+
+- `vpn-policyctl admin-create`、`admin-password-reset`、`password-reset` 统一要求
+  密码 8–256 字节；此前 CLI 可创建 1 字节密码。
+- `vpn-policyctl user-set` 在禁用、修改组或固定 IP 后通过 policyd `KICK`
+  强制旧会话下线，与 `PATCH /api/users` 行为一致；KICK 失败只告警，不回滚配置。
+- `deploy/test-guards.sh` 增加 CLI 弱密码拒绝用例。
+
 ## [0.3.5] - 2026-11-18
 
 P2 安全加固：数据库凭据、Web 安全头与审计容量告警。
